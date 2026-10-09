@@ -3,7 +3,7 @@
 # но с подставными путями (-DUSB_BASE и др.), адресами /tmp/ft/... и санитайзерами памяти.
 # Использование: cd <папка с исходниками, где main.cpp>; bash tests/build_tests.sh [имя ...]   (без имён: собрать все)
 SRC="main.cpp assets.S writer.cpp incoming.cpp log.cpp net.cpp bencode.cpp sha1.cpp torrent.cpp tracker.cpp storage.cpp download.cpp resume.cpp swarm.cpp"
-BASE="-std=c++17 -O1 -g -Wall -fsanitize=address,undefined -DHOST_TEST -DINTERNAL_ROOT=\\\"/tmp/ft/internal/torrents\\\" -DLISTEN_PORT=26881 -DUSB_BASE=\\\"/tmp/ft/usb\\\" -DEXT_BASE=\\\"/tmp/ft/ext\\\" -DHTTP_PORT=18787 -DLOG_DIR=\\\"/tmp/ft/log\\\" -DCONFIG_FILE=\\\"/tmp/ft/log/config.txt\\\""
+BASE="-std=c++17 -O1 -g -Wall -fsanitize=address,undefined -DHOST_TEST -DINTERNAL_ROOT=\\\"/tmp/ft/internal/torrents\\\" -DLISTEN_PORT=26881 -DUSB_BASE=\\\"/tmp/ft/usb\\\" -DHTTP_PORT=18787 -DLOG_DIR=\\\"/tmp/ft/log\\\" -DCONFIG_FILE=\\\"/tmp/ft/log/config.txt\\\""
 declare -A V
 V[daemon_host]="-DAUTOSTART_DEFAULT=1"                                   # api, delete, wr, part_test, все загрузки (автозапуск включён)
 V[daemon_auto]=""                                                        # auto_run, auto2_run (автозапуск выключен, как на консоли)

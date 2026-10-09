@@ -149,7 +149,7 @@ function warnings(d){
     w.push('"' + i.title + '" still needs about ' + sz(left) + (dr ? ', but only ' + sz(dr.free) + ' is free' : ''));
   });
   var off = d.items.filter(function(i){ return i.status === 'offline'; }).length;
-  if (off) w.push(off + ' task(s) wait for the drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
+  if (off) w.push(off + ' task(s) wait for the USB drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
   return w;
 }
 
@@ -260,14 +260,12 @@ function destOptions(){
   (d.drives || []).forEach(function(x){ if (x.kind === 'internal') opts[0].free = x.free; });
   if (d.mounts) {
     d.mounts.forEach(function(m){
-      opts.push({ v: String(m.n), label: (m.kind === 'ext' ? 'Extended disk ' : 'USB drive ') + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
+      opts.push({ v: String(m.n), label: 'USB drive ' + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
     });
   } else {
     (d.drives || []).forEach(function(x){
       var m = x.root.match(/usb(\d+)\/torrents$/);
       if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: 'USB drive ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
-      var e = x.root.match(/ext(\d+)\/torrents$/);
-      if (x.kind === 'ext' && e) opts.push({ v: String(8 + parseInt(e[1], 10)), label: 'Extended disk ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
     });
   }
   opts.forEach(function(o){ if (o.free !== null) o.label += ' - ' + sz(o.free) + ' free'; });
