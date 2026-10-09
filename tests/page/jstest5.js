@@ -18,7 +18,7 @@ const five = mk('Five Files', [['a.pkg', 1 * GB], ['b.pkg', 2 * GB], ['c.pkg', 3
 const second = mk('Second Pack', [['x.bin', 100], ['y.bin', 200]]);
 const junk = new Uint8Array([1, 2, 3]).buffer;
 
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
 Object.defineProperty(els.dsel, 'innerHTML', { get(){ return this._h || ''; }, set(v){ this._h = v; const re = /<option value="([^"]*)">([^<]*)<\/option>/g; let m; this.options = []; while ((m = re.exec(v))) this.options.push({ value: m[1], text: m[2].replace(/&quot;/g,'"').replace(/&amp;/g,'&') }); } });
 let status = { items: [
   { hash:'a'.repeat(40), title:'Pack One', status:'paused', size:5*GB, done:0, pct:0, speed_kb:0, eta_s:-1, peers:0, paused:true, low_space:false, nfiles:3, nskip:1, root:'/mnt/usb0/torrents' },
@@ -56,9 +56,9 @@ const lastAdd = () => calls.filter(c => c.startsWith('/api/add')).pop();
   ok(els.dgo.textContent === 'Next', 'a multi-file torrent shows "Next"');
   els.dgo.onclick(); await flush();
   ok(els.dlg.style.display === 'none' && els.dlg2.style.display === 'flex' && calls.filter(c => c.startsWith('/api/add')).length === 0, 'Next opens the file window and uploads nothing yet');
-  ok(els.f2list.innerHTML.includes('a.pkg') && els.f2list.innerHTML.includes('sub/e.pkg') && (els.f2list.innerHTML.match(/checked/g) || []).length === 5, 'all 5 files are listed and ALL are checked by default');
+  ok(els.f2list.innerHTML.includes('a.pkg') && els.f2list.innerHTML.includes('>e.pkg<') && els.f2list.innerHTML.includes('sub/') && (els.f2list.innerHTML.match(/checked/g) || []).length === 6, 'all 5 files are listed (folder sub/ as a block with its own checkbox) and ALL are checked by default');
   ok(els.f2info.textContent === 'Selected: 5 of 5 files, 8.0 GB' && els.f2go.disabled === false, 'summary: ' + els.f2info.textContent);
-  ok(els.f2go.textContent === 'Start download' && html.includes('id="f2all">Select all<') && html.includes('id="f2none">Deselect all<') && html.includes('id="f2cancel">Cancel<'), 'the four buttons are named as requested');
+  ok(els.f2go.textContent === 'Start download' && html.includes('id="f2all">Select all<') && html.includes('id="f2none">Deselect all<') && html.includes('id="f2cancel" class="dng">Cancel<') && html.includes('id="f2go" class="go">Start download<') && html.includes('id="f2back">Back<'), 'the buttons are named as requested (Cancel red, Start download green, Back present)');
   // 3. снимаем файлы и запускаем
   chg(0, 1, false); chg(0, 2, false);
   ok(els.f2info.textContent === 'Selected: 3 of 5 files, 3.0 GB', 'unchecking updates the summary: ' + els.f2info.textContent);
@@ -105,7 +105,7 @@ const lastAdd = () => calls.filter(c => c.startsWith('/api/add')).pop();
   els.m.onclick({ target: { dataset: { c: 'files', h: 'a'.repeat(40) }, disabled: false } }); await flush();
   ok(calls.some(c => c.startsWith('/api/files?hash=' + 'a'.repeat(40))), 'the button asks the console for the file list');
   ok(els.dlg2.style.display === 'flex' && els.f2title.textContent === 'Files: Pack One' && els.f2go.textContent === 'Apply', 'the window opens in "edit" mode: title and Apply button');
-  ok(els.f2list.innerHTML.includes('>a.pkg<') && els.f2list.innerHTML.includes('dlc/b.pkg') && !els.f2list.innerHTML.includes('Pack One/'), 'the common root folder is stripped from the paths');
+  ok(els.f2list.innerHTML.includes('>a.pkg<') && els.f2list.innerHTML.includes('dlc/') && els.f2list.innerHTML.includes('>b.pkg<') && !els.f2list.innerHTML.includes('Pack One/'), 'the common root folder is stripped from the paths');
   ok(els.f2info.textContent === 'Selected: 2 of 3 files, 3.0 GB', 'current selection shown: ' + els.f2info.textContent);
   chg(0, 1, true); ok(els.f2info.textContent.startsWith('Selected: 3 of 3'), 'switching a file on updates the summary');
   els.f2go.onclick(); await flush();

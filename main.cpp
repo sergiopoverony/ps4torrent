@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.5"
+#define APP_VERSION "1.4.1.6"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -1730,6 +1730,8 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_json = "{\"items\":[],\"drives\":[]}";
 static std::string g_filesReply;                 // ответ на /api/files (готовит главный поток, под g_mu)
 static std::string g_cfg = "{}";
+static std::map<std::string, std::string> g_dupTitles;   // хэш -> название у раздач, которые уже есть в списке и не завершены (под g_mu; обновляет главный цикл)
+static std::map<std::string, time_t> g_recentAdds;       // хэши, добавленные через страницу только что (под g_addMu): двойной щелчок до обновления списка
 static unsigned g_cmdSeq = 0;                      // сколько команд поставлено в очередь (HTTP-потоки)
 static unsigned g_cmdTaken = 0;                    // сколько команд забрал главный цикл (только главный поток)
 static unsigned g_cmdDone = 0;                     // до какой команды состояние уже обновлено и опубликовано
@@ -1813,6 +1815,9 @@ static void build_snapshot()
         j += buf;
         j += json_escape(it.root) + "\",\"title\":\"" + json_escape(it.title) + "\"}";
     }
+    std::map<std::string, std::string> dupNow;
+    for (size_t i = 0; i < g_items.size(); i++)
+        if (!g_items[i]->complete && !g_items[i]->offline) dupNow[g_items[i]->t.infoHashHex] = g_items[i]->title;
     j += "],\"drives\":[";
 
     j += g_drivesJson;
@@ -1839,7 +1844,13 @@ static void build_snapshot()
     pthread_mutex_lock(&g_mu);
     g_json = j;
     g_cfg = cfg;
+    g_dupTitles.swap(dupNow);
     pthread_mutex_unlock(&g_mu);
+    {   // раздача уже есть в списке (в том числе завершённая): "только что добавленные" больше не нужны, дальше решает список
+        pthread_mutex_lock(&g_addMu);
+        for (size_t i = 0; i < g_items.size(); i++) g_recentAdds.erase(g_items[i]->t.infoHashHex);
+        pthread_mutex_unlock(&g_addMu);
+    }
 }
 
 static const char* PAGE = R"HTMLPAGE(<!doctype html><html><head><meta charset="utf-8">
@@ -1857,21 +1868,24 @@ main{padding:0 14px 24px;display:grid;gap:10px}
 .bar i{display:block;height:100%;background:var(--ac)}.complete .bar i{background:var(--ok)}
 button,.btn{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit;font-size:13px}
 .dng{color:var(--er);border-color:var(--er)}
+.go{color:var(--ok);border-color:var(--ok)}
 .s{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid var(--mut);color:var(--mut)}
 .offline .s,.waiting .s{color:var(--wr);border-color:var(--wr)}
 .warn{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:rgba(248,81,73,.14);color:var(--er);display:none;font-size:14px}
 .ov{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}
 .dl{max-width:540px;width:92%;max-height:86vh;overflow:auto;box-sizing:border-box}
 .dl h2{margin:0 0 10px;font-size:17px}
+.dl2{max-width:min(940px,96vw)}
 select,select option{background:var(--card);color:var(--fg)}
 select{max-width:100%;border:1px solid var(--mut);border-radius:6px;padding:4px 6px;font:inherit}
 option:checked,option:hover{background:#25344a;color:var(--fg)}
 .dl .f{padding:3px 0;word-break:break-word}.dl .row{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap}
 .logo{display:inline-flex;align-items:center;background:#10151c;border-radius:10px;padding:6px 14px;text-decoration:none}
 .logo img{height:36px;width:auto;display:block}
-.fl{max-height:48vh;overflow:auto;margin:10px 0;border:1px solid #25344a;border-radius:8px;padding:4px 8px}
+.fl{max-height:56vh;overflow:auto;margin:10px 0;border:1px solid #25344a;border-radius:8px;padding:4px 8px}
 .fl .h{padding:8px 0 2px;border-top:1px solid #25344a}.fl .h:first-child{border-top:0}
 .fl label{display:flex;gap:8px;align-items:flex-start;padding:3px 0;word-break:break-word}
+.fl .dh{padding:10px 0 2px;border-top:1px solid #25344a;font-weight:600}.fl .dh:first-child{border-top:0}.fl .in{padding-left:24px}
 .fl input{width:auto;margin-top:3px}.fl .sz{margin-left:auto;white-space:nowrap;padding-left:10px}
 footer{padding:16px 14px 22px;text-align:center;color:var(--mut);font-size:12px}
 button:disabled{opacity:.55;cursor:default}
@@ -1899,14 +1913,14 @@ button:disabled{opacity:.55;cursor:default}
 <div id="dinfo" class="mut" style="margin-top:6px"></div>
 <div id="dwarn" class="warn" style="margin:8px 0 0"></div>
 <div style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> Start downloading right away</label></div>
-<div class="row"><button id="dcancel">Cancel</button><button id="dgo">Download</button></div>
+<div class="row"><button id="dcancel" class="dng">Cancel</button><button id="dgo" class="go">Download</button></div>
 </div></div>
-<div id="dlg2" class="ov"><div class="dl c">
+<div id="dlg2" class="ov"><div class="dl dl2 c">
 <h2 id="f2title">Select files to download</h2>
 <div id="f2info" class="mut"></div>
 <div id="f2warn" class="warn" style="margin:8px 0 0"></div>
 <div id="f2list" class="fl"></div>
-<div class="row"><button id="f2all">Select all</button><button id="f2none">Deselect all</button><button id="f2go">Start download</button><button id="f2cancel">Cancel</button></div>
+<div class="row"><button id="f2all">Select all</button><button id="f2none">Deselect all</button><button id="f2back">Back</button><button id="f2go" class="go">Start download</button><button id="f2cancel" class="dng">Cancel</button></div>
 </div></div>
 <main id="m"><div class="c">loading...</div></main>
 <footer id="ft">ps4torrent v1.0 Created by SergioPoverony and Mr.Claude</footer>
@@ -2183,19 +2197,47 @@ function refresh2(){
   $('f2warn').textContent = msg;
   $('f2go').disabled = t.bad > 0 || t.cnt === 0;
 }
+// Раскладка файлов раздачи для показа: сначала файлы из корня, ниже папки блоками (по первой части пути). Порядок только
+// для показа: номера файлов (для skip) остаются исходными.
+function f2Layout(g){
+  var root = [], dirs = {}, names = [];
+  g.files.forEach(function(x, i){
+    var k = x.path.indexOf('/');
+    if (k < 0) { root.push(i); return; }
+    var d = x.path.substr(0, k);
+    if (!dirs[d]) { dirs[d] = []; names.push(d); }
+    dirs[d].push(i);
+  });
+  var nat = function(a, b){ return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }); };
+  var byPath = function(a, b){ return nat(g.files[a].path, g.files[b].path); };
+  root.sort(byPath);
+  names.sort(nat);
+  return { root: root, dirs: names.map(function(n){ dirs[n].sort(byPath); return { name: n, idx: dirs[n] }; }) };
+}
 function renderFiles2(){
-  var html = '';
+  var html = '', box = $('f2list'), keep = box.scrollTop;
+  var row = function(g, gi, i, text, cls){
+    var x = g.files[i];
+    return '<label class="' + cls + '"><input type="checkbox" data-g="' + gi + '" data-f="' + i + '"' + (g.chk[i] ? ' checked' : '') + '><span>' + E(text) + '</span><span class="sz mut">' + sz(x.size) + '</span></label>';
+  };
   f2.groups.forEach(function(g, gi){
     if (f2.groups.length > 1) {
       var n = 0, tot = 0;
       g.files.forEach(function(x, i){ if (g.chk[i]) n++; tot += x.size; });
       html += '<div class="h"><label><input type="checkbox" data-ga="' + gi + '"' + (n === g.files.length ? ' checked' : '') + '><b>' + E(g.title) + '</b> <span class="mut">(' + g.files.length + ' files, ' + sz(tot) + ')</span></label></div>';
     }
-    g.files.forEach(function(x, i){
-      html += '<label><input type="checkbox" data-g="' + gi + '" data-f="' + i + '"' + (g.chk[i] ? ' checked' : '') + '><span>' + E(x.path) + '</span><span class="sz mut">' + sz(x.size) + '</span></label>';
+    var L = f2Layout(g);
+    L.root.forEach(function(i){ html += row(g, gi, i, g.files[i].path, ''); });
+    L.dirs.forEach(function(d){
+      var on = 0, tot = 0;
+      d.idx.forEach(function(i){ if (g.chk[i]) on++; tot += g.files[i].size; });
+      html += '<div class="dh"><label><input type="checkbox" data-gd="' + gi + '" data-dn="' + E(d.name) + '"' + (on === d.idx.length ? ' checked' : '') + (on > 0 && on < d.idx.length ? ' data-part="1"' : '') + '><b>' + E(d.name) + '/</b> <span class="mut">(' + d.idx.length + ' files, ' + sz(tot) + ')</span></label></div>';
+      d.idx.forEach(function(i){ html += row(g, gi, i, g.files[i].path.substr(d.name.length + 1), 'in'); });
     });
   });
-  $('f2list').innerHTML = html;
+  box.innerHTML = html;
+  Array.prototype.forEach.call(box.querySelectorAll('input[data-part]'), function(c){ c.indeterminate = true; });
+  box.scrollTop = keep;
   refresh2();
 }
 function setAll2(v){ f2.groups.forEach(function(g){ g.chk = g.chk.map(function(){ return v; }); }); renderFiles2(); }
@@ -2203,7 +2245,19 @@ $('f2list').onchange = function(e){
   var t = e.target;
   if (!t || !t.dataset || !f2) return;
   if (t.dataset.ga !== undefined) { var g = f2.groups[+t.dataset.ga]; g.chk = g.chk.map(function(){ return !!t.checked; }); renderFiles2(); }
-  else if (t.dataset.g !== undefined) { f2.groups[+t.dataset.g].chk[+t.dataset.f] = !!t.checked; refresh2(); }
+  else if (t.dataset.gd !== undefined) {
+    var gg = f2.groups[+t.dataset.gd], on = !!t.checked;
+    f2Layout(gg).dirs.forEach(function(d){ if (d.name === t.dataset.dn) d.idx.forEach(function(i){ gg.chk[i] = on; }); });
+    renderFiles2();
+  }
+  else if (t.dataset.g !== undefined) { f2.groups[+t.dataset.g].chk[+t.dataset.f] = !!t.checked; renderFiles2(); }
+};
+$('f2back').onclick = function(){                                   // назад к первому окну: выбор файлов запоминается
+  if (!f2) return;
+  f2.groups.forEach(function(g){ if (g.src) g.src.chk = g.chk.slice(); });
+  $('dlg2').style.display = 'none';
+  f2 = null;
+  $('dlg').style.display = 'flex';
 };
 $('f2all').onclick = function(){ if (f2) setAll2(true); };
 $('f2none').onclick = function(){ if (f2) setAll2(false); };
@@ -2214,6 +2268,7 @@ function openFiles2(groups, mode, extra){
   $('dlg').style.display = 'none';
   $('f2title').textContent = mode === 'add' ? 'Select files to download' : 'Files: ' + (extra.title || '');
   $('f2go').textContent = mode === 'add' ? 'Start download' : 'Apply';
+  $('f2back').style.display = mode === 'add' ? '' : 'none';
   renderFiles2();
   $('dlg2').style.display = 'flex';
 }
@@ -2265,17 +2320,19 @@ $('dlg').onclick = function(e){ if (e.target === $('dlg')) closeDialog(); };
 function doUpload(files, drive, start, label){
   if (!files.length) return;
   say('Adding ' + files.length + ' torrent(s) to ' + label + '...', false);
-  var okN = 0, errs = [], left = files.length;
+  var okN = 0, errs = [], dups = [], left = files.length;
   var fin = function(){
     if (--left > 0) return;
-    if (errs.length) say('Added ' + okN + ', failed ' + errs.length + ': ' + errs.join('; '), true);
-    else say('Added ' + okN + ' to ' + label + (start ? ' and started' : ' (not started: press resume)'), false);
+    var dupTxt = dups.length ? 'Already in the list, not added again: ' + dups.join('; ') : '';
+    if (errs.length) say('Added ' + okN + ', failed ' + errs.length + ': ' + errs.join('; ') + (dupTxt ? '. ' + dupTxt : ''), true);
+    else if (okN === 0 && dupTxt) say(dupTxt, true);
+    else say('Added ' + okN + ' to ' + label + (start ? ' and started' : ' (not started: press resume)') + (dupTxt ? '. ' + dupTxt : ''), false);
     load(true);
   };
   files.forEach(function(f){
     api('/api/add?name=' + encodeURIComponent(f.name) + '&drive=' + encodeURIComponent(drive) + '&start=' + start + (f.skip ? '&skip=' + encodeURIComponent(f.skip) : ''), { method: 'POST', body: f.data })
       .then(function(r){ return r.json(); })
-      .then(function(d){ if (d.ok) okN++; else errs.push(f.name + ': ' + d.error); fin(); })
+      .then(function(d){ if (d.ok && d.duplicate) dups.push(d.title || f.name); else if (d.ok) okN++; else errs.push(f.name + ': ' + d.error); fin(); })
       .catch(function(){ errs.push(f.name + ': upload failed'); fin(); });
   });
 }
@@ -2286,7 +2343,7 @@ $('dgo').onclick = function(){
   var sel = $('dsel'), drive = sel.value, start = $('dstart').checked ? 1 : 0;
   var label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.split(' - ')[0] : drive;
   if (anyMulti()) {                                                 // есть раздача из нескольких файлов: окно выбора файлов
-    openFiles2(valid.map(function(f){ return { title: f.info.name, files: f.info.files, chk: f.info.files.map(function(){ return true; }), src: f }; }),
+    openFiles2(valid.map(function(f){ return { title: f.info.name, files: f.info.files, chk: (f.chk && f.chk.length === f.info.files.length) ? f.chk.slice() : f.info.files.map(function(){ return true; }), src: f }; }),
                'add', { drive: drive, start: start, label: label });
     return;
   }
@@ -2518,6 +2575,32 @@ static void handle_add(int c, const std::string& query, const std::string& body)
         }
     }
 
+    // Такая раздача уже есть в списке (и не завершена): второй копии не создаём, страница сообщит об этом.
+    // Завершённую можно добавить заново: она начнётся с нуля (так и задумано).
+    {
+        std::string dupTitle;
+        bool dup = false;
+        pthread_mutex_lock(&g_mu);
+        std::map<std::string, std::string>::const_iterator di = g_dupTitles.find(t.infoHashHex);
+        if (di != g_dupTitles.end()) { dup = true; dupTitle = di->second; }
+        pthread_mutex_unlock(&g_mu);
+        if (!dup) {
+            time_t nowT = time(NULL);
+            pthread_mutex_lock(&g_addMu);
+            for (std::map<std::string, time_t>::iterator ri = g_recentAdds.begin(); ri != g_recentAdds.end();) {
+                if (nowT - ri->second > 30) g_recentAdds.erase(ri++); else ++ri;
+            }
+            if (g_recentAdds.count(t.infoHashHex)) { dup = true; dupTitle = t.name; }
+            pthread_mutex_unlock(&g_addMu);
+        }
+        if (dup) {
+            unlink(tmp.c_str());
+            logf_("add via web: already in the list, not added again: %s", dupTitle.c_str());
+            respond(c, "application/json", "{\"ok\":true,\"duplicate\":true,\"title\":\"" + json_escape(dupTitle) + "\"}");
+            return;
+        }
+    }
+
     // Имя не должно затирать существующий файл.
     std::string base = name.substr(0, name.size() - 8), finalName = name;
     for (int n = 2; n < 100; n++) {
@@ -2532,6 +2615,9 @@ static void handle_add(int c, const std::string& query, const std::string& body)
         respond_json_error(c, 500, "Error", "cannot save the file");
         return;
     }
+    pthread_mutex_lock(&g_addMu);
+    g_recentAdds[t.infoHashHex] = time(NULL);
+    pthread_mutex_unlock(&g_addMu);
     std::string skipParam = qget(query, "skip");              // проверен выше, до сохранения файла
     // start=1: запустить сразу; start=0: оставить на паузе; без параметра: по настройке автозапуска.
     std::string startParam = qget(query, "start");
