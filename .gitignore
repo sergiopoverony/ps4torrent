@@ -1,0 +1,4 @@
+*.o
+*.tmp
+blob_info.h
+/ps4torrentd.elf

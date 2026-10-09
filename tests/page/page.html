@@ -1,0 +1,475 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark"><meta name="theme-color" content="#10151c">
+<title>ps4torrent</title><link rel="icon" href="/favicon.ico"><style>
+:root{color-scheme:dark;--bg:#10151c;--fg:#e6edf3;--mut:#8b98a8;--card:#18202a;--ac:#4aa3ff;--ok:#3fb950;--wr:#d29922;--er:#f85149}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
+header{padding:14px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+h1{font-size:18px;margin:0}.mut{color:var(--mut)}
+main{padding:0 14px 24px;display:grid;gap:10px}
+.c{background:var(--card);border-radius:10px;padding:12px 14px}
+.t{font-weight:600;word-break:break-word}.r{display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.bar{flex:1;min-width:140px;height:8px;background:rgba(127,127,127,.25);border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ac)}.complete .bar i{background:var(--ok)}
+button,.btn{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit;font-size:13px}
+.dng{color:var(--er);border-color:var(--er)}
+.s{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid var(--mut);color:var(--mut)}
+.offline .s,.waiting .s{color:var(--wr);border-color:var(--wr)}
+.warn{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:rgba(248,81,73,.14);color:var(--er);display:none;font-size:14px}
+.ov{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}
+.dl{max-width:540px;width:92%;max-height:86vh;overflow:auto;box-sizing:border-box}
+.dl h2{margin:0 0 10px;font-size:17px}
+select,select option{background:var(--card);color:var(--fg)}
+select{max-width:100%;border:1px solid var(--mut);border-radius:6px;padding:4px 6px;font:inherit}
+option:checked,option:hover{background:#25344a;color:var(--fg)}
+.dl .f{padding:3px 0;word-break:break-word}.dl .row{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap}
+.logo{display:inline-flex;align-items:center;background:#10151c;border-radius:10px;padding:6px 14px;text-decoration:none}
+.logo img{height:36px;width:auto;display:block}
+.fl{max-height:48vh;overflow:auto;margin:10px 0;border:1px solid #25344a;border-radius:8px;padding:4px 8px}
+.fl .h{padding:8px 0 2px;border-top:1px solid #25344a}.fl .h:first-child{border-top:0}
+.fl label{display:flex;gap:8px;align-items:flex-start;padding:3px 0;word-break:break-word}
+.fl input{width:auto;margin-top:3px}.fl .sz{margin-left:auto;white-space:nowrap;padding-left:10px}
+footer{padding:16px 14px 22px;text-align:center;color:var(--mut);font-size:12px}
+button:disabled{opacity:.55;cursor:default}
+#msg{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:var(--card);display:none}
+#cfg{margin:0 14px 10px;display:none}
+#cfg label{display:inline-flex;gap:6px;align-items:center;margin-right:14px}
+#cfg input{width:70px;background:transparent;color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
+</style></head><body>
+<header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
+<label class="btn">+ .torrent<input id="up" type="file" accept=".torrent" multiple hidden></label>
+<button id="allgo">start all</button><button id="allstop">pause all</button>
+<button id="cfgb">settings</button></header>
+<div id="warn" class="warn"></div>
+<div id="msg"></div>
+<div id="cfg" class="c">
+<label>parallel downloads <input id="mp" type="number" min="1" max="25"></label>
+<label>listen port (0 = off) <input id="lp" type="number" min="0" max="65535"></label>
+<label><input id="as" type="checkbox" style="width:auto"> start tasks automatically</label>
+<label><input id="rs" type="checkbox" style="width:auto"> resume interrupted downloads after a restart</label>
+<button id="cfgs">save</button> <span class="mut" id="cfgi"></span></div>
+<div id="dlg" class="ov"><div class="dl c">
+<h2>Add torrent</h2>
+<div id="dfiles"></div>
+<div style="margin-top:12px"><label>Save to <select id="dsel"></select></label></div>
+<div id="dinfo" class="mut" style="margin-top:6px"></div>
+<div id="dwarn" class="warn" style="margin:8px 0 0"></div>
+<div style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> Start downloading right away</label></div>
+<div class="row"><button id="dcancel">Cancel</button><button id="dgo">Download</button></div>
+</div></div>
+<div id="dlg2" class="ov"><div class="dl c">
+<h2 id="f2title">Select files to download</h2>
+<div id="f2info" class="mut"></div>
+<div id="f2warn" class="warn" style="margin:8px 0 0"></div>
+<div id="f2list" class="fl"></div>
+<div class="row"><button id="f2all">Select all</button><button id="f2none">Deselect all</button><button id="f2go">Start download</button><button id="f2cancel">Cancel</button></div>
+</div></div>
+<main id="m"><div class="c">loading...</div></main>
+<footer id="ft">ps4torrent v1.0 Created by SergioPoverony and Mr.Claude</footer>
+<script>
+var TK = '';
+try { TK = sessionStorage.getItem('tk') || ''; } catch (e) {}
+var hm = location.hash.match(/token=([^&]*)/);
+if (hm) { TK = decodeURIComponent(hm[1]); try { sessionStorage.setItem('tk', TK); } catch (e) {} }
+
+function sz(n){var u=['B','KB','MB','GB','TB'],i=0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+function tm(s){if(s<0)return'-';if(s<60)return'<1 min';var m=Math.round(s/60);if(m<60)return m+' min';var h=Math.floor(m/60);m=m%60;if(h<48)return h+' h '+m+' min';return Math.floor(h/24)+' d '+(h%24)+' h'}
+function E(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function $(id){return document.getElementById(id)}
+
+var msgTimer = 0;
+function say(text, bad){
+  var m = $('msg'); m.textContent = text; m.style.display = 'block'; m.style.color = bad ? 'var(--er)' : 'var(--fg)';
+  clearTimeout(msgTimer); msgTimer = setTimeout(function(){ m.style.display = 'none'; }, 7000);
+}
+
+// Все запросы к API идут через api(): добавляет пароль, при ответе 401 один раз спрашивает его.
+function api(path, opts, retried){
+  var url = path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(TK);
+  return fetch(url, opts || {}).then(function(r){
+    if (r.status === 401 && !retried) {
+      var t = prompt('Access token:');
+      if (t === null) return r;
+      TK = t; try { sessionStorage.setItem('tk', TK); } catch (e) {}
+      return api(path, opts, true);
+    }
+    return r;
+  });
+}
+
+// ---- Кнопки. Список перерисовывается целиком (innerHTML), и кнопка, на которую нажали, может быть заменена новой.
+// Поэтому состояние "действие выполняется" хранится не на кнопке, а здесь, и учитывается при каждой отрисовке.
+var pending = {};        // выполняющиеся действия: ключ "команда:хэш"
+var busy = 0;            // сколько действий в работе; пока они есть, список не перерисовывается сам
+var holdUntil = 0;       // до этого момента (мс) список не перерисовывается: палец или мышь на кнопке
+var lastHtml = '';       // что сейчас показано в списке (если не изменилось, DOM не трогаем)
+var lastData = null;     // последнее состояние, полученное от консоли
+var EMPTY = '<div class="c">No torrents. Put .torrent files into /mnt/usbN/torrents/ or use "+ .torrent"</div>';
+
+function btn(c, h, label, cls, title){
+  var p = pending[c + ':' + h];
+  return '<button' + (cls ? ' class="' + cls + '"' : '') + ' data-c="' + c + '" data-h="' + h + '"' +
+    (title !== undefined ? ' data-t="' + E(title) + '"' : '') + (p ? ' disabled' : '') + '>' + (p ? '...' : label) + '</button>';
+}
+
+function row(i){
+  var b = '';
+  if (i.status === 'paused') b += btn('resume', i.hash, 'resume');
+  else if (i.status !== 'complete' && i.status !== 'offline') b += btn('pause', i.hash, 'pause');
+  if (i.nfiles > 1 && i.status !== 'complete') b += btn('files', i.hash, 'files');
+  b += btn('delete', i.hash, 'remove', 'dng', i.title);
+  b += btn('delete_files', i.hash, 'remove + files', 'dng', i.title);
+  var eta = i.status === 'downloading' ? ', ETA ' + tm(i.eta_s) : '';
+  var fsel = i.nskip ? '<span class="s">' + (i.nfiles - i.nskip) + '/' + i.nfiles + ' files</span>' : '';
+  var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">low space</span>' : '';
+  return '<div class="c ' + i.status + '"><div class="t">' + E(i.title) + '</div><div class="r">'
+    + '<span class="s">' + i.status + '</span>' + fsel + low + '<div class="bar"><i style="width:' + i.pct + '%"></i></div>'
+    + '<span>' + i.pct + '% of ' + sz(i.size) + '</span>'
+    + '<span class="mut">' + i.speed_kb + ' KB/s, ' + i.peers + ' peers' + eta + '</span>' + b + '</div></div>';
+}
+
+function paint(){
+  if (!lastData) return;
+  var html = lastData.items.map(row).join('') || EMPTY;
+  if (html !== lastHtml) { $('m').innerHTML = html; lastHtml = html; }
+}
+
+function driveName(x){ return x.kind === 'internal' ? 'console memory' : x.root.replace('/torrents', ''); }
+
+function warnings(d){
+  var w = [], off = {}, cnt = 0;
+  d.items.forEach(function(i){ if (i.status === 'offline') { off[i.root] = (off[i.root] || 0) + 1; cnt++; } });
+  Object.keys(off).forEach(function(r){
+    w.push('Storage not found: ' + (r.indexOf('/data/') === 0 ? 'console memory' : r.replace('/torrents', '')) + ' (' + off[r] + ' task(s) waiting). They continue by themselves when it returns.');
+  });
+  d.drives.forEach(function(x){ if (x.low) w.push('Low free space on ' + driveName(x) + ': only ' + sz(x.free) + ' left'); });
+  d.items.forEach(function(i){
+    if (!i.low_space) return;
+    var left = Math.max(0, i.size - i.done), dr = d.drives.filter(function(x){ return x.root === i.root; })[0];
+    w.push('"' + i.title + '" still needs about ' + sz(left) + (dr ? ', but only ' + sz(dr.free) + ' is free' : ''));
+  });
+  var off = d.items.filter(function(i){ return i.status === 'offline'; }).length;
+  if (off) w.push(off + ' task(s) wait for the drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
+  return w;
+}
+
+// Скорость приходит от консоли уже усреднённой, но данные от пиров идут пачками, и цифра всё равно скачет. Здесь добавляется
+// ещё одно сглаживание (по 25% новых данных на каждое обновление раз в 2 секунды). Время и остаток считает консоль, их это не касается.
+var sm = {};
+function smooth(key, v, running){
+  if (!running) { delete sm[key]; return v; }
+  var s = (sm[key] === undefined) ? v : sm[key] * 0.75 + v * 0.25;
+  sm[key] = s;
+  return Math.round(s);
+}
+
+function load(force){
+  if (!force && (busy > 0 || Date.now() < holdUntil)) return;      // идёт действие или на кнопке палец: не мешаем
+  api('/status').then(function(r){ return r.json(); })
+  .then(function(d){
+    lastData = d;
+    d.items.forEach(function(i){ i.speed_kb = smooth(i.hash, i.speed_kb, i.status === 'downloading'); });
+    d.speed_kb = smooth('_all', d.speed_kb, d.speed_kb > 0);
+    var dr = d.drives.map(function(x){ return driveName(x) + ' free ' + sz(x.free); }).join(' | ')
+      || (d.items.length ? 'USB DRIVE NOT FOUND: tasks continue by themselves when it returns (check or re-plug the drive)' : 'no storage with a torrents folder');
+    $('sum').textContent = d.speed_kb + ' KB/s | ' + dr + ' | incoming: ' + (d.listen_port ? d.incoming + ' peers (port ' + d.listen_port + ')' : 'off')
+      + (d.deleting ? ' | deleting files...' : '');
+    $('ft').textContent = 'ps4torrent v' + d.version + ' Created by SergioPoverony and Mr.Claude';
+    var w = warnings(d), wb = $('warn');
+    wb.style.display = w.length ? 'block' : 'none';
+    wb.textContent = w.join(' | ');
+    if (busy > 0 || (!force && Date.now() < holdUntil)) return;     // пока ждали ответ, началось действие: список не трогаем
+    paint();
+  }).catch(function(){ $('sum').textContent = 'no connection'; });
+}
+
+function withTimeout(p, ms){
+  return new Promise(function(res, rej){
+    var t = setTimeout(function(){ rej(new Error('timeout')); }, ms);
+    p.then(function(v){ clearTimeout(t); res(v); }, function(e){ clearTimeout(t); rej(e); });
+  });
+}
+
+function act(c, h, t){
+  if (c === 'files') { openTaskFiles(h); return; }
+  var k = c + ':' + h, q;
+  if (pending[k]) return;                                           // уже выполняется: повторное нажатие игнорируем
+  if (c === 'delete') {
+    if (!confirm('Remove from the list? Downloaded files stay on the drive.\n\n' + t)) return;
+    q = '/api/delete?hash=' + h;
+  } else if (c === 'delete_files') {
+    if (!confirm('Remove AND delete the downloaded files from the drive?\n\n' + t)) return;
+    q = '/api/delete?files=1&hash=' + h;
+  } else q = '/api/' + c + '?hash=' + h;
+
+  pending[k] = true; busy++;
+  paint();                                                          // кнопка сразу показывает "..."
+  var finish = function(){ delete pending[k]; busy--; load(true); };  // один раз перерисовываем актуальное состояние
+  withTimeout(api(q).then(function(r){ return r.json(); }), 10000)
+    .then(function(d){ if (!d.ok) say(d.error || 'failed', true); finish(); })
+    .catch(function(){ say('No answer from the console', true); finish(); });
+}
+
+$('m').onclick = function(e){
+  var b = e.target;
+  if (!b || !b.dataset || !b.dataset.c || b.disabled) return;
+  act(b.dataset.c, b.dataset.h, b.dataset.t);
+};
+// Нажатие уже началось (но ещё не завершилось кликом): не заменяем кнопки под пальцем.
+$('m').onmousedown = $('m').ontouchstart = function(){ holdUntil = Date.now() + 700; };
+
+// ---- Добавление торрента: выбор файла -> диалог (место сохранения) -> отправка.
+var dlgFiles = [];
+
+// Минимальный разбор .torrent (bencode): достаём имя и общий размер, чтобы заранее проверить свободное место.
+function latin(u8){ var s = ''; for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return s; }
+function bdecode(b){
+  var p = 0;
+  function num(end){ var s = ''; while (b[p] !== end) { if (p >= b.length) throw new Error('eof'); s += String.fromCharCode(b[p++]); } p++; return s; }
+  function val(depth){
+    if (depth > 24 || p >= b.length) throw new Error('bad');
+    var c = b[p];
+    if (c === 105) { p++; return parseInt(num(101), 10); }
+    if (c === 108) { p++; var l = []; while (b[p] !== 101) { if (p >= b.length) throw new Error('eof'); l.push(val(depth + 1)); } p++; return l; }
+    if (c === 100) { p++; var d = {}; while (b[p] !== 101) { if (p >= b.length) throw new Error('eof'); var k = val(depth + 1); d[latin(k.b)] = val(depth + 1); } p++; return d; }
+    if (c >= 48 && c <= 57) { var n = parseInt(num(58), 10); if (p + n > b.length) throw new Error('eof'); var s = b.subarray(p, p + n); p += n; return { b: s }; }
+    throw new Error('bad');
+  }
+  return val(0);
+}
+function torrentInfo(buf){
+  try {
+    var t = bdecode(new Uint8Array(buf)), info = t.info;
+    if (!info || !info.name || !info.pieces) return null;
+    var dec = function(u){ return (typeof TextDecoder !== 'undefined') ? new TextDecoder('utf-8').decode(u) : latin(u); };
+    var name = dec(info.name.b), files = [], size = 0;
+    if (typeof info.length === 'number') { size = info.length; files.push({ path: name, size: info.length }); }
+    else if (info.files && info.files.length) info.files.forEach(function(f){
+      var len = (typeof f.length === 'number') ? f.length : 0;
+      files.push({ path: (f.path || []).map(function(p){ return dec(p.b); }).join('/'), size: len });
+      size += len;
+    });
+    else return null;
+    return { name: name, size: size, files: files };
+  } catch (e) { return null; }
+}
+
+function destOptions(){
+  var opts = [{ v: 'internal', label: 'Console memory (system disk)', free: null, reserve: 5 * 1073741824 }];
+  var d = lastData || {};
+  (d.drives || []).forEach(function(x){ if (x.kind === 'internal') opts[0].free = x.free; });
+  if (d.mounts) {
+    d.mounts.forEach(function(m){
+      opts.push({ v: String(m.n), label: (m.kind === 'ext' ? 'Extended disk ' : 'USB drive ') + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
+    });
+  } else {
+    (d.drives || []).forEach(function(x){
+      var m = x.root.match(/usb(\d+)\/torrents$/);
+      if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: 'USB drive ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
+      var e = x.root.match(/ext(\d+)\/torrents$/);
+      if (x.kind === 'ext' && e) opts.push({ v: String(8 + parseInt(e[1], 10)), label: 'Extended disk ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
+    });
+  }
+  opts.forEach(function(o){ if (o.free !== null) o.label += ' - ' + sz(o.free) + ' free'; });
+  return opts;
+}
+
+// Предупреждение о месте: нужно total байт на выбранном месте (o).
+function spaceWarning(o, total){
+  if (!o || o.free === null || !total) return '';
+  if (total > o.free) return 'Not enough free space: needs about ' + sz(total) + ', only ' + sz(o.free) + ' is free here.';
+  if (o.free - total < o.reserve) return 'Low free space: only ' + sz(o.free - total) + ' will be left after the download.';
+  return '';
+}
+function destByValue(v){ var opts = destOptions(); return opts.filter(function(x){ return x.v === v; })[0] || opts[0]; }
+
+function anyMulti(){ return dlgFiles.some(function(f){ return f.info && f.info.files.length > 1; }); }
+
+function updateDlg(){
+  var o = destByValue($('dsel').value), total = 0, good = 0;
+  dlgFiles.forEach(function(f){ if (f.info) { total += f.info.size; good++; } });
+  $('dinfo').textContent = good ? 'Total size: ' + sz(total) + (o.free !== null ? ', free: ' + sz(o.free) : '') : '';
+  var w = $('dwarn'), msg = good ? spaceWarning(o, total) : '';
+  w.style.display = msg ? 'block' : 'none';
+  w.textContent = msg;
+  $('dgo').disabled = good === 0;
+  $('dgo').textContent = anyMulti() ? 'Next' : 'Download';
+}
+
+function openDialog(files){
+  dlgFiles = files;
+  $('dfiles').innerHTML = files.map(function(f){
+    return '<div class="f">' + (f.info ? E(f.info.name) + ' <span class="mut">(' + sz(f.info.size) + (f.info.files.length > 1 ? ', ' + f.info.files.length + ' files' : '') + ')</span>'
+      : E(f.name) + ' <span style="color:var(--er)">- not a valid .torrent</span>') + '</div>';
+  }).join('');
+  $('dsel').innerHTML = destOptions().map(function(o){ return '<option value="' + o.v + '">' + E(o.label) + '</option>'; }).join('');
+  $('dsel').value = 'internal';                                    // по умолчанию: система консоли
+  $('dstart').checked = true;
+  updateDlg();
+  $('dlg').style.display = 'flex';
+}
+function closeDialog(){ $('dlg').style.display = 'none'; $('dlg2').style.display = 'none'; dlgFiles = []; f2 = null; }
+
+// ---- Окно 2: выбор файлов (при добавлении нескольких файлов и для уже добавленной задачи)
+var f2 = null;           // { mode: 'add' | 'edit', hash, groups: [{ title, files: [{path,size}], chk: [bool], src }], drive, start, label }
+function skipText(chk){  // номера снятых файлов: "3,5-9"
+  var out = [], k = 0;
+  while (k < chk.length) {
+    if (chk[k]) { k++; continue; }
+    var e = k;
+    while (e + 1 < chk.length && !chk[e + 1]) e++;
+    out.push(e > k ? k + '-' + e : String(k));
+    k = e + 1;
+  }
+  return out.join(',');
+}
+function f2Totals(){
+  var t = { size: 0, cnt: 0, all: 0, bad: 0 };
+  f2.groups.forEach(function(g){
+    var n = 0;
+    g.files.forEach(function(x, i){ t.all++; if (g.chk[i]) { t.size += x.size; t.cnt++; n++; } });
+    if (!n) t.bad++;
+  });
+  return t;
+}
+function refresh2(){
+  var t = f2Totals(), msg = '';
+  $('f2info').textContent = 'Selected: ' + t.cnt + ' of ' + t.all + ' files, ' + sz(t.size);
+  if (t.bad) msg = f2.groups.length > 1 ? 'Select at least one file in every torrent.' : 'Select at least one file.';
+  else if (f2.mode === 'add') msg = spaceWarning(destByValue(f2.drive), t.size);
+  $('f2warn').style.display = msg ? 'block' : 'none';
+  $('f2warn').textContent = msg;
+  $('f2go').disabled = t.bad > 0 || t.cnt === 0;
+}
+function renderFiles2(){
+  var html = '';
+  f2.groups.forEach(function(g, gi){
+    if (f2.groups.length > 1) {
+      var n = 0, tot = 0;
+      g.files.forEach(function(x, i){ if (g.chk[i]) n++; tot += x.size; });
+      html += '<div class="h"><label><input type="checkbox" data-ga="' + gi + '"' + (n === g.files.length ? ' checked' : '') + '><b>' + E(g.title) + '</b> <span class="mut">(' + g.files.length + ' files, ' + sz(tot) + ')</span></label></div>';
+    }
+    g.files.forEach(function(x, i){
+      html += '<label><input type="checkbox" data-g="' + gi + '" data-f="' + i + '"' + (g.chk[i] ? ' checked' : '') + '><span>' + E(x.path) + '</span><span class="sz mut">' + sz(x.size) + '</span></label>';
+    });
+  });
+  $('f2list').innerHTML = html;
+  refresh2();
+}
+function setAll2(v){ f2.groups.forEach(function(g){ g.chk = g.chk.map(function(){ return v; }); }); renderFiles2(); }
+$('f2list').onchange = function(e){
+  var t = e.target;
+  if (!t || !t.dataset || !f2) return;
+  if (t.dataset.ga !== undefined) { var g = f2.groups[+t.dataset.ga]; g.chk = g.chk.map(function(){ return !!t.checked; }); renderFiles2(); }
+  else if (t.dataset.g !== undefined) { f2.groups[+t.dataset.g].chk[+t.dataset.f] = !!t.checked; refresh2(); }
+};
+$('f2all').onclick = function(){ if (f2) setAll2(true); };
+$('f2none').onclick = function(){ if (f2) setAll2(false); };
+$('f2cancel').onclick = closeDialog;
+
+function openFiles2(groups, mode, extra){
+  f2 = { mode: mode, groups: groups, hash: extra.hash || '', drive: extra.drive || '', start: extra.start, label: extra.label || '' };
+  $('dlg').style.display = 'none';
+  $('f2title').textContent = mode === 'add' ? 'Select files to download' : 'Files: ' + (extra.title || '');
+  $('f2go').textContent = mode === 'add' ? 'Start download' : 'Apply';
+  renderFiles2();
+  $('dlg2').style.display = 'flex';
+}
+
+// Файлы уже добавленной задачи (кнопка Files): список приходит от консоли
+function openTaskFiles(hash){
+  api('/api/files?hash=' + hash).then(function(r){ return r.json(); }).then(function(d){
+    if (!d.ok) { say(d.error || 'failed', true); return; }
+    var paths = d.files.map(function(x){ return x.path; }), root = paths[0].indexOf('/') > 0 ? paths[0].split('/')[0] : '';
+    var strip = root && paths.every(function(p){ return p.indexOf(root + '/') === 0; });
+    openFiles2([{ title: d.title, files: d.files.map(function(x){ return { path: strip ? x.path.substr(root.length + 1) : x.path, size: x.size }; }), chk: d.files.map(function(x){ return !!x.sel; }) }],
+               'edit', { hash: d.hash, title: d.title });
+  }).catch(function(){ say('No answer from the console', true); });
+}
+
+$('f2go').onclick = function(){
+  if (!f2) return;
+  var m = f2;
+  if (m.mode === 'edit') {
+    var txt = skipText(m.groups[0].chk);
+    closeDialog();
+    api('/api/select?hash=' + m.hash + '&skip=' + encodeURIComponent(txt)).then(function(r){ return r.json(); })
+      .then(function(d){ say(d.ok ? 'Files updated' : (d.error || 'failed'), !d.ok); setTimeout(function(){ load(true); }, 1500); })
+      .catch(function(){ say('No answer from the console', true); });
+    return;
+  }
+  var files = m.groups.map(function(g){ return { name: g.src.name, data: g.src.data, skip: skipText(g.chk) }; });
+  closeDialog();
+  doUpload(files, m.drive, m.start, m.label);
+};
+
+$('up').onchange = function(){
+  var fs = Array.prototype.slice.call(this.files);
+  this.value = '';
+  if (!fs.length) return;
+  var out = [], left = fs.length;
+  var done = function(){ if (--left === 0) { api('/status').then(function(r){ return r.json(); }).then(function(d){ lastData = d; }).catch(function(){}).then(function(){ openDialog(out); }); } };
+  fs.forEach(function(f, i){
+    var rd = new FileReader();
+    rd.onload = function(){ out[i] = { name: f.name, data: rd.result, info: torrentInfo(rd.result) }; done(); };
+    rd.onerror = function(){ out[i] = { name: f.name, data: null, info: null }; done(); };
+    rd.readAsArrayBuffer(f);
+  });
+};
+$('dsel').onchange = updateDlg;
+$('dcancel').onclick = closeDialog;
+$('dlg').onclick = function(e){ if (e.target === $('dlg')) closeDialog(); };
+
+function doUpload(files, drive, start, label){
+  if (!files.length) return;
+  say('Adding ' + files.length + ' torrent(s) to ' + label + '...', false);
+  var okN = 0, errs = [], left = files.length;
+  var fin = function(){
+    if (--left > 0) return;
+    if (errs.length) say('Added ' + okN + ', failed ' + errs.length + ': ' + errs.join('; '), true);
+    else say('Added ' + okN + ' to ' + label + (start ? ' and started' : ' (not started: press resume)'), false);
+    load(true);
+  };
+  files.forEach(function(f){
+    api('/api/add?name=' + encodeURIComponent(f.name) + '&drive=' + encodeURIComponent(drive) + '&start=' + start + (f.skip ? '&skip=' + encodeURIComponent(f.skip) : ''), { method: 'POST', body: f.data })
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if (d.ok) okN++; else errs.push(f.name + ': ' + d.error); fin(); })
+      .catch(function(){ errs.push(f.name + ': upload failed'); fin(); });
+  });
+}
+
+$('dgo').onclick = function(){
+  var valid = dlgFiles.filter(function(f){ return f.info && f.data; });
+  if (!valid.length) return;
+  var sel = $('dsel'), drive = sel.value, start = $('dstart').checked ? 1 : 0;
+  var label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text.split(' - ')[0] : drive;
+  if (anyMulti()) {                                                 // есть раздача из нескольких файлов: окно выбора файлов
+    openFiles2(valid.map(function(f){ return { title: f.info.name, files: f.info.files, chk: f.info.files.map(function(){ return true; }), src: f }; }),
+               'add', { drive: drive, start: start, label: label });
+    return;
+  }
+  closeDialog();
+  doUpload(valid.map(function(f){ return { name: f.name, data: f.data, skip: '' }; }), drive, start, label);
+};
+
+// Все задачи сразу
+$('allgo').onclick = function(){ api('/api/resume_all').then(function(){ load(); }); };
+$('allstop').onclick = function(){ api('/api/pause_all').then(function(){ load(); }); };
+
+// Настройки
+$('cfgb').onclick = function(){
+  var p = $('cfg');
+  if (p.style.display === 'block') { p.style.display = 'none'; return; }
+  api('/api/config').then(function(r){ return r.json(); }).then(function(c){
+    $('mp').value = c.max_parallel; $('lp').value = c.listen_port; $('as').checked = !!c.autostart; $('rs').checked = c.resume_session !== false;
+    $('cfgi').textContent = 'version ' + c.version;
+    p.style.display = 'block';
+  });
+};
+$('cfgs').onclick = function(){
+  api('/api/set?max_parallel=' + encodeURIComponent($('mp').value) + '&listen_port=' + encodeURIComponent($('lp').value) + '&autostart=' + ($('as').checked ? 1 : 0) + '&resume_session=' + ($('rs').checked ? 1 : 0))
+    .then(function(r){ return r.json(); }).then(function(d){ say(d.ok ? 'Saved' : (d.error || 'failed'), !d.ok); setTimeout(load, 1500); });
+};
+
+load(); setInterval(function(){ load(); }, 2000);
+</script></body></html>
