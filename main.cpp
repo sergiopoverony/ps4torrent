@@ -66,15 +66,12 @@
 #ifndef USB_BASE
 #define USB_BASE "/mnt/usb"          // /mnt/usb0, /mnt/usb1, ...
 #endif
-#ifndef EXT_BASE
-#define EXT_BASE "/mnt/ext"          // расширенный диск (extended storage): /mnt/ext0, /mnt/ext1
-#endif
 #ifndef HTTP_PORT
 #define HTTP_PORT 8787
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.4"
+#define APP_VERSION "1.4.1.5"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -135,14 +132,7 @@ extern const unsigned char ps4_notify_start[], ps4_notify_end[];
 #endif
 
 static const int MAX_USB = 8;
-static const int MAX_EXT = 2;                          // /mnt/ext0, /mnt/ext1
-static const int SLOT_COUNT = MAX_USB + MAX_EXT;       // номера накопителей: 0..7 = usbN, 8..9 = ext0..ext1
-static void slot_mount(int s, char* buf, size_t n)
-{
-    if (s < MAX_USB) snprintf(buf, n, "%s%d", USB_BASE, s);
-    else snprintf(buf, n, "%s%d", EXT_BASE, s - MAX_USB);
-}
-static bool slot_is_ext(int s) { return s >= MAX_USB; }
+
 // Проверка уже скачанного (чтение файлов и SHA-1) работает чередой "поработали - передохнули", чтобы не занимать
 // процессор и USB целиком: иначе вся консоль начинала тормозить. Примерно 40% времени работы, 60% отдыха.
 static const int CHECK_WORK_US = 8000;
@@ -1533,10 +1523,9 @@ static void scan_usb(time_t now)
 
     // Места хранения: флешки /mnt/usbN/torrents и (если папка есть) внутренняя память консоли.
     std::vector<std::string> roots;
-    for (int i = 0; i < SLOT_COUNT; i++) {
+    for (int i = 0; i < MAX_USB; i++) {
         char rootBuf[96];
-        slot_mount(i, rootBuf, sizeof(rootBuf));
-        strncat(rootBuf, "/torrents", sizeof(rootBuf) - strlen(rootBuf) - 1);
+        snprintf(rootBuf, sizeof(rootBuf), "%s%d/torrents", USB_BASE, i);
         if (is_dir(rootBuf)) roots.push_back(rootBuf);
     }
     if (is_dir(INTERNAL_ROOT)) roots.push_back(INTERNAL_ROOT);
@@ -1678,10 +1667,9 @@ static void scan_usb(time_t now)
     std::string dj;
     g_freeMap.clear();
     std::vector<std::string> order;
-    for (int d = 0; d < SLOT_COUNT; d++) {
+    for (int d = 0; d < MAX_USB; d++) {
         char rootBuf[96];
-        slot_mount(d, rootBuf, sizeof(rootBuf));
-        strncat(rootBuf, "/torrents", sizeof(rootBuf) - strlen(rootBuf) - 1);
+        snprintf(rootBuf, sizeof(rootBuf), "%s%d/torrents", USB_BASE, d);
         if (present.count(rootBuf)) order.push_back(rootBuf);
     }
     if (present.count(INTERNAL_ROOT)) order.push_back(INTERNAL_ROOT);
@@ -1703,7 +1691,7 @@ static void scan_usb(time_t now)
         g_freeMap[rootBuf] = freeB;
         char buf[360];
         snprintf(buf, sizeof(buf), "%s{\"root\":\"%s\",\"free\":%llu,\"total\":%llu,\"kind\":\"%s\",\"low\":%s}", dj.empty() ? "" : ",",
-                 rootBuf.c_str(), freeB, totalB, is_internal_root(rootBuf) ? "internal" : (rootBuf.compare(0, strlen(EXT_BASE), EXT_BASE) == 0 ? "ext" : "usb"), freeB < low_reserve(rootBuf) ? "true" : "false");
+                 rootBuf.c_str(), freeB, totalB, is_internal_root(rootBuf) ? "internal" : "usb", freeB < low_reserve(rootBuf) ? "true" : "false");
         dj += buf;
     }
     g_drivesJson = dj;
@@ -1711,9 +1699,9 @@ static void scan_usb(time_t now)
     // Все смонтированные USB-накопители, в том числе без папки torrents (она создаётся при добавлении торрента на такой
     // накопитель). Нужны странице для выбора места.
     std::string mj;
-    for (int d = 0; d < SLOT_COUNT; d++) {
+    for (int d = 0; d < MAX_USB; d++) {
         char mpb[96];
-        slot_mount(d, mpb, sizeof(mpb));
+        snprintf(mpb, sizeof(mpb), "%s%d", USB_BASE, d);
         if (!usb_mount_available(mpb)) continue;
         struct statvfs sv;
         unsigned long long freeB = 0, totalB = 0;
@@ -1729,7 +1717,7 @@ static void scan_usb(time_t now)
         }
 #endif
         char buf[300];
-        snprintf(buf, sizeof(buf), "%s{\"n\":%d,\"kind\":\"%s\",\"mount\":\"%s\",\"has_torrents\":%s,\"writable\":%s,\"free\":%llu,\"total\":%llu,\"low\":%s}", mj.empty() ? "" : ",", d, slot_is_ext(d) ? "ext" : "usb", mpb,
+        snprintf(buf, sizeof(buf), "%s{\"n\":%d,\"mount\":\"%s\",\"has_torrents\":%s,\"writable\":%s,\"free\":%llu,\"total\":%llu,\"low\":%s}", mj.empty() ? "" : ",", d, mpb,
                  is_dir(std::string(mpb) + "/torrents") ? "true" : "false", usb_mount_writable(mpb) ? "true" : "false", freeB, totalB, freeB < LOW_FREE_USB_BYTES ? "true" : "false");
         mj += buf;
     }
@@ -2005,7 +1993,7 @@ function warnings(d){
     w.push('"' + i.title + '" still needs about ' + sz(left) + (dr ? ', but only ' + sz(dr.free) + ' is free' : ''));
   });
   var off = d.items.filter(function(i){ return i.status === 'offline'; }).length;
-  if (off) w.push(off + ' task(s) wait for the drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
+  if (off) w.push(off + ' task(s) wait for the USB drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
   return w;
 }
 
@@ -2116,14 +2104,12 @@ function destOptions(){
   (d.drives || []).forEach(function(x){ if (x.kind === 'internal') opts[0].free = x.free; });
   if (d.mounts) {
     d.mounts.forEach(function(m){
-      opts.push({ v: String(m.n), label: (m.kind === 'ext' ? 'Extended disk ' : 'USB drive ') + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
+      opts.push({ v: String(m.n), label: 'USB drive ' + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
     });
   } else {
     (d.drives || []).forEach(function(x){
       var m = x.root.match(/usb(\d+)\/torrents$/);
       if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: 'USB drive ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
-      var e = x.root.match(/ext(\d+)\/torrents$/);
-      if (x.kind === 'ext' && e) opts.push({ v: String(8 + parseInt(e[1], 10)), label: 'Extended disk ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
     });
   }
   opts.forEach(function(o){ if (o.free !== null) o.label += ' - ' + sz(o.free) + ' free'; });
@@ -2463,24 +2449,24 @@ static void handle_add(int c, const std::string& query, const std::string& body)
             bool digits = true;
             for (size_t i = 0; i < want.size(); i++) if (want[i] < '0' || want[i] > '9') digits = false;
             int n = digits ? atoi(want.c_str()) : -1;
-            if (n < 0 || n >= SLOT_COUNT) { respond_json_error(c, 400, "Bad Request", "drive must be internal or a drive number"); return; }
+            if (n < 0 || n >= MAX_USB) { respond_json_error(c, 400, "Bad Request", "drive must be internal or a USB number"); return; }
             char mpb[96];
-            slot_mount(n, mpb, sizeof(mpb));
-            if (!usb_mount_available(mpb)) { respond_json_error(c, 409, "Conflict", std::string("drive ") + mpb + " is not mounted"); return; }
+            snprintf(mpb, sizeof(mpb), "%s%d", USB_BASE, n);
+            if (!usb_mount_available(mpb)) { respond_json_error(c, 409, "Conflict", "USB drive " + std::to_string(n) + " is not mounted"); return; }
             mp = mpb;
         } else {
             unsigned long long bestFree = 0;
             bool bestHas = false;
-            for (int d = 0; d < SLOT_COUNT; d++) {
+            for (int d = 0; d < MAX_USB; d++) {
                 char mpb[96];
-                slot_mount(d, mpb, sizeof(mpb));
+                snprintf(mpb, sizeof(mpb), "%s%d", USB_BASE, d);
                 if (!usb_mount_available(mpb) || !usb_mount_writable(mpb)) continue;      // только доступные для записи
                 bool has = is_dir(std::string(mpb) + "/torrents");
                 struct statvfs sv;
                 unsigned long long fr = (statvfs(mpb, &sv) == 0) ? (unsigned long long)sv.f_bavail * sv.f_frsize : 0;
                 if (mp.empty() || (has && !bestHas) || (has == bestHas && fr > bestFree)) { mp = mpb; bestFree = fr; bestHas = has; }
             }
-            if (mp.empty()) { respond_json_error(c, 409, "Conflict", "no writable USB or extended drive is mounted (you can save to the console memory instead)"); return; }
+            if (mp.empty()) { respond_json_error(c, 409, "Conflict", "no writable USB drive is mounted (you can save to the console memory instead)"); return; }
         }
         root = mp + "/torrents";
         if (!is_dir(root)) {
