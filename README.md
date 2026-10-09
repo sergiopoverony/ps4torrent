@@ -29,4 +29,10 @@ A prebuilt payload is in `release/ps4torrentd.elf`. After it starts, open `http:
 * `docs/HANDOFF.md` - developer notes: architecture, decisions, how to continue (Russian)
 * `tests/` - PC test suites (see `tests/README_TESTS.md`)
 
+## License
+
+Copyright (C) 2026 SergioPoverony and Mr.Claude.
+
+Licensed under the GNU General Public License v3.0 (see `LICENSE`). Anyone may use, modify and redistribute it; the copyright notice must be kept, and modified versions must be released under the same license with source code.
+
 Created by SergioPoverony and Mr.Claude.
