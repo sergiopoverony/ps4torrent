@@ -25,6 +25,8 @@ def raw(data, wait=3, close_after_send=False):
     s.close(); return out
 
 small = open("/tmp/ft/torrents_src/Small.torrent", "rb").read()
+smallB = small.replace(b"5:Small", b"5:SmalB")   # другая раздача (другой хэш), та же структура
+smallC = small.replace(b"5:Small", b"5:SmalC")
 big = open("/tmp/ft/torrents_src/Big8M.torrent", "rb").read()
 
 print("== access token")
@@ -40,9 +42,11 @@ code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote("Моя игра.to
 check("valid upload accepted, Cyrillic name kept: %s" % d.get("file"), code == 200 and d.get("ok") and d["file"] == "Моя игра.torrent" and os.path.exists(R + "/Моя игра.torrent"))
 code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote("../../etc/passwd"), data=big, method="POST")
 check("path traversal in name is neutralised: %s" % d.get("file"), code == 200 and d["file"] == "etcpasswd.torrent" and os.path.exists(R + "/etcpasswd.torrent") and not os.path.exists("/tmp/ft/etc"))
-code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote('a:b*c?d"e<f>g|h.torrent'), data=small, method="POST")
+code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote('a:b*c?d"e<f>g|h.torrent'), data=smallB, method="POST")
+code, dd = jreq("/api/add?drive=0&name=again.torrent", data=small, method="POST")
+check("the same torrent again is reported as a duplicate, not saved: %s" % dd, code == 200 and dd.get("duplicate") is True and not os.path.exists(R + "/again.torrent"))
 check("forbidden characters removed: %s" % d.get("file"), code == 200 and d["file"] == "abcdefgh.torrent")
-code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote("Моя игра.torrent"), data=small, method="POST")
+code, d = jreq("/api/add?drive=0&name=" + urllib.parse.quote("Моя игра.torrent"), data=smallC, method="POST")
 check("existing name is not overwritten: %s" % d.get("file"), code == 200 and d["file"] == "Моя игра (2).torrent")
 code, d = jreq("/api/add?drive=0&name=bad.torrent", data=os.urandom(500), method="POST")
 check("garbage body rejected (400): %s" % d.get("error"), code == 400 and not d.get("ok") and not os.path.exists(R + "/bad.torrent"))

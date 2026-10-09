@@ -25,7 +25,8 @@
 | Полная проверка у задач со снятыми файлами | `python3 qv_assert_test.py` (`daemon_sel`) | 8/8 |
 | Удаление при недописанных кусках (было падение) | `python3 delzombie_test.py daemon_host` | 13/13 (на `daemon_oldhost` со старым кодом: ASAN heap-use-after-free) |
 | Медленное удаление файлов (поток) | `python3 slowdel_test.py` (хук `/tmp/ft/unlink_cost`) | 8/8 |
-| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js` | 20/20, 34/34 |
+| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js` | 20/20, 34/34, 16/16 |
+| Дубликаты | `ft/dup_test.py` | 9/9 |
 
 Каждый `*_run.sh` пишет результат в `<имя>.result`. Тесты на ThreadSanitizer: `tsan_net_run.sh` (бинарник `daemon_tsan`
 собирается как остальные, но с `-fsanitize=thread` вместо address,undefined).
