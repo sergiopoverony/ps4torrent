@@ -50,6 +50,7 @@ const lastAdd = () => calls.filter(c => c.startsWith('/api/add')).pop();
   // GoW-подобная раздача: pkg из корня вперемешку с файлами папки .pad и ещё одна папка
   const gow = mk('God Of War', [['2_B.pkg', 7 * GB], ['.pad/1900544', 2e6], ['1_A.pkg', 35 * GB], ['.pad/1638400', 1.6e6], ['EP9000-X.pkg', 1e6], ['.pad/3145728', 3e6], ['dlc/z.bin', 100], ['10_C.pkg', 5 * GB]]);
   await pick([['gow.torrent', gow]]);
+  ok(els.dsel.options.map(o => o.text).join('|') === 'HDD - 40.0 GB free|USB0 - 27.0 GB free', 'save-to list is short: ' + els.dsel.options.map(o => o.text).join('|'));
   els.dgo.onclick(); await flush();
   const h = els.f2list.innerHTML;
   const pos = s => h.indexOf(s);
