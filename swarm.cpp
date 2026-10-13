@@ -50,9 +50,13 @@ static const int PIECE_STALE_SECONDS = 20;               // по куску да
 static const int PIECE_DROP_SECONDS = 600;               // и только если не приходит 10 минут, выбрасываем кусок целиком
 static const int CONNECT_TIMEOUT_SECONDS = 10;           // сколько ждём ответа на подключение (было 15)
 static const int HANDSHAKE_TIMEOUT_SECONDS = 10;         // и на handshake (было 15)
-static const int PEER_SILENT_SECONDS = 15;               // пир держит наши запросы, но блоков не шлёт: отпускаем (было 30 с с запроса)
+static const int PEER_SILENT_SECONDS = 8;                // пир держит наши запросы, но блоков не шлёт: отпускаем (было 30, потом 15 с)
+static const int PEER_USELESS_SECONDS = 15;              // пир не разрешил качать (choke) и блоков не шлёт: освобождаем место новому
+static const int ROTATE_IDLE_SECONDS = 12;               // слоты заняты, а есть свежие кандидаты: бездействующих пиров меняем на новых
+static const int WANT_SENDING_PEERS = 5;                 // меньше стольких отдающих пиров: просим у трекера новых чаще
 static const int STALL_RESTART_SECONDS = 30;             // совсем нет данных: пересоздаём соединения
 static const int ANNOUNCE_NO_PEERS_SECONDS = 45;         // как часто спрашивать трекер, когда никто не отдаёт
+static const int ANNOUNCE_WEAK_SECONDS = 60;             // отдающих пиров мало
 static const int ANNOUNCE_NORMAL_SECONDS = 120;
 
 static uint32_t get32(const unsigned char* p) {
@@ -106,7 +110,7 @@ struct Conn {
     int fd = -1;
     int state = 0;                      // 0 подключается, 1 ждём handshake, 2 работает
     std::string key;
-    time_t started = 0, lastRecv = 0, lastBlock = 0;
+    time_t started = 0, lastRecv = 0, lastBlock = 0, readyAt = 0;   // readyAt: когда закончился handshake
     std::string in, out;
     bool choked = true;
     std::vector<bool> has;
@@ -429,6 +433,7 @@ static bool parse_input(Ctx& x, Conn& c) {
         c.remoteId.assign((const char*)h + 48, 20);
         pos = 68;
         c.state = 2;
+        c.readyAt = time(NULL);
         static const unsigned char interested[5] = {0, 0, 0, 1, 2};
         c.out.append((const char*)interested, 5);
     }
@@ -898,9 +903,10 @@ int Swarm::prepare(time_t now, fd_set& rf, fd_set& wf)
 
     // Запрос новых пиров у трекеров: идёт в отдельном потоке, здесь только запускаем его и забираем результат.
     size_t wantMore = (size_t)(s.maxConns < 10 ? s.maxConns : 10);
-    if (!s.pendingAnnounce && s.candidates.empty() && s.conns.size() < wantMore &&
+    bool weak = s.lastSending < WANT_SENDING_PEERS;            // отдающих пиров мало: новых кандидатов нужно больше
+    if (!s.pendingAnnounce && s.candidates.empty() && (s.conns.size() < wantMore || weak) &&
         (s.lastAnnounce == 0 ||
-         now - s.lastAnnounce >= (s.lastReady == 0 ? ANNOUNCE_NO_PEERS_SECONDS : ANNOUNCE_NORMAL_SECONDS))) {
+         now - s.lastAnnounce >= (s.lastReady == 0 ? ANNOUNCE_NO_PEERS_SECONDS : (weak ? ANNOUNCE_WEAK_SECONDS : ANNOUNCE_NORMAL_SECONDS)))) {
         uint64_t done = (uint64_t)ds.haveCount * t.pieceLength;
         uint64_t left = done >= t.totalSize ? 0 : t.totalSize - done;
         if (!start_announce(t, s.peerId, left, s.pendingAnnounce)) s.lastAnnounce = now;     // нечего спрашивать: повтор позже
@@ -931,6 +937,23 @@ int Swarm::prepare(time_t now, fd_set& rf, fd_set& wf)
             added++;
         }
         logf_("  [%s] announce: %d peers, %d new candidates", x.tag.c_str(), (int)got.size(), added);
+    }
+
+    // Все места заняты, а в запасе есть свежие кандидаты: бездействующих пиров (разговор есть, блоков нет) меняем на новых,
+    // не больше двух за проход.
+    if (!s.candidates.empty() && s.conns.size() >= (size_t)s.maxConns) {
+        int freed = 0;
+        for (size_t i = 0; i < s.conns.size() && freed < 2; i++) {
+            Conn& c = s.conns[i];
+            if (c.fd < 0 || c.state != 2 || !c.pending.empty()) continue;
+            if (now - c.readyAt <= ROTATE_IDLE_SECONDS || (c.lastBlock != 0 && now - c.lastBlock <= ROTATE_IDLE_SECONDS)) continue;
+            conn_close(x, c, "replaced by a new peer (it was idle)");
+            freed++;
+        }
+        if (freed) {
+            for (size_t i = s.conns.size(); i > 0; i--)
+                if (s.conns[i - 1].fd < 0) s.conns.erase(s.conns.begin() + (i - 1));
+        }
     }
 
     // Новые соединения
@@ -1046,6 +1069,11 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
             // медленный, но живой пир, который шлёт блоки, не отпускается.
             if (!c.pending.empty() && now - std::max(c.lastBlock, c.pending[0].sent) > PEER_SILENT_SECONDS) {
                 conn_close(x, c, "request timeout");
+                continue;
+            }
+            // Пир не разрешил нам качать (choke) и ничего не присылает: он только занимает место.
+            if (c.choked && c.pending.empty() && now - std::max(c.readyAt, c.lastBlock) > PEER_USELESS_SECONDS) {
+                conn_close(x, c, "choked for too long");
                 continue;
             }
             if (!fill_requests(x, c)) { conn_close(x, c, c.failWhy.empty() ? "send failed" : c.failWhy.c_str()); continue; }

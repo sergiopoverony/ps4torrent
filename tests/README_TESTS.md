@@ -25,7 +25,8 @@
 | Полная проверка у задач со снятыми файлами | `python3 qv_assert_test.py` (`daemon_sel`) | 8/8 |
 | Удаление при недописанных кусках (было падение) | `python3 delzombie_test.py daemon_host` | 13/13 (на `daemon_oldhost` со старым кодом: ASAN heap-use-after-free) |
 | Медленное удаление файлов (поток) | `python3 slowdel_test.py` (хук `/tmp/ft/unlink_cost`) | 8/8 |
-| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js`, `node page/jstest7.js` | 20/20, 34/34, 17/17, 20/20 |
+| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js`, `node page/jstest7.js`, `node page/jstest8.js` | 20/20, 34/34, 17/17, 20/20, 15/15 |
+| Замена бесполезных пиров | `ft/mix_run.sh` (`mix_test.py` + `peers_mix.py`, бинарник `daemon_host`) | 4/4 |
 | Языки и выключение | `ft/lang_test.py` | 9/9 |
 | Автопауза при нехватке памяти | `ft/memguard_run.sh` (`memguard_test.py`, бинарник `daemon_memg`) | 21/21 |
 | Дубликаты | `ft/dup_test.py` | 9/9 |
