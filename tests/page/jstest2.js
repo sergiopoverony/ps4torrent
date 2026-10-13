@@ -34,9 +34,9 @@ const btn = (c, h, t) => ({ dataset:{ c, h, t }, disabled:false });
   await tick(); await tick();
   ok(curHtml.includes('Game One') && curHtml.includes('data-c="pause"'), 'first load paints the list');
   ok(els.ft.textContent === 'ps4torrent v1.0 Created by SergioPoverony and Mr.Claude', 'footer: ' + els.ft.textContent);
-  ok(els.warn.style.display === 'block' && els.warn.textContent.includes('Low free space on console memory') && els.warn.textContent.includes('"Big Game" still needs about 20.0 GB'), 'low-space banner: ' + els.warn.textContent);
+  ok(els.warn.style.display === 'block' && els.warn.textContent.includes('Low free space on HDD') && els.warn.textContent.includes('"Big Game" still needs about 20.0 GB'), 'low-space banner: ' + els.warn.textContent);
   ok(curHtml.includes('low space'), 'item row shows the "low space" tag');
-  ok(els.sum.textContent.includes('console memory free 3.0 GB') && els.sum.textContent.includes('/mnt/usb0 free 27.0 GB'), 'header names the storages: ' + els.sum.textContent);
+  ok(els.sum.textContent.includes('HDD free 3.0 GB') && els.sum.textContent.includes('USB0 free 27.0 GB'), 'header names the storages: ' + els.sum.textContent);
 
   // 1. Нажатие: кнопка сразу "...", список не перерисовывается автоматически, пока действие идёт
   respondDelay = 1; const n0 = writes.length;
@@ -80,7 +80,7 @@ const btn = (c, h, t) => ({ dataset:{ c, h, t }, disabled:false });
   // 8b. Хранилище пропало: страница говорит об этом прямо, даже если память консоли на месте
   status.items[0].status = 'offline'; status.items[0].root = '/mnt/usb0/torrents'; status.drives = status.drives.filter(x => x.kind === 'internal');
   ctx.load(true); await tick(); await tick(); await tick();
-  ok(els.warn.style.display === 'block' && els.warn.textContent.includes('Storage not found: /mnt/usb0 (1 task(s) waiting)'), 'offline storage is named in the banner: ' + els.warn.textContent.slice(0, 90));
+  ok(els.warn.style.display === 'block' && els.warn.textContent.includes('Storage not found: USB0 (1 task(s) waiting)'), 'offline storage is named in the banner: ' + els.warn.textContent.slice(0, 90));
   // 9. Настройки (выбор места сохранения теперь не здесь, а в диалоге добавления)
   els.cfgb.onclick(); await tick(); await tick();
   ok(els.mp.value === 3, 'settings open and load values');

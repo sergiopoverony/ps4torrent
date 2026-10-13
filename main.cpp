@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.9"
+#define APP_VERSION "1.4.1.10"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -2144,13 +2144,18 @@ function paint(){
   if (html !== lastHtml) { $('m').innerHTML = html; lastHtml = html; }
 }
 
-function driveName(x){ return x.kind === 'internal' ? T('console_memory') : x.root.replace('/torrents', ''); }
+function rootName(r){                                                  // подпись накопителя: HDD, USB0, USB1...
+  if (r.indexOf('/data/') === 0) return T('console_memory');
+  var m = r.match(/usb(\d+)\/torrents$/);
+  return m ? T('dest_usb', m[1]) : r.replace('/torrents', '');
+}
+function driveName(x){ return x.kind === 'internal' ? T('console_memory') : rootName(x.root); }
 
 function warnings(d){
   var w = [], off = {}, cnt = 0;
   d.items.forEach(function(i){ if (i.status === 'offline') { off[i.root] = (off[i.root] || 0) + 1; cnt++; } });
   Object.keys(off).forEach(function(r){
-    w.push(T('w_storage', r.indexOf('/data/') === 0 ? T('console_memory') : r.replace('/torrents', ''), off[r]));
+    w.push(T('w_storage', rootName(r), off[r]));
   });
   d.drives.forEach(function(x){ if (x.low) w.push(T('w_lowfree', driveName(x), sz(x.free))); });
   d.items.forEach(function(i){
