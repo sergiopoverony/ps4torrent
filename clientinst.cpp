@@ -86,12 +86,13 @@ typedef int (*fn_status)(int, int*);
 typedef int (*fn_clen)(int, int*, unsigned long long*);
 typedef int (*fn_read)(int, void*, size_t);
 typedef int (*fn_del)(int);
+typedef int (*fn_conn)(int, const char*, int);
 
 static struct {
     bool ok;
     int ctx;
     fn_tmpl createTemplate; fn_req_url createReq; fn_set2 autoRedirect; fn_setu connTo, recvTo, sendTo;
-    fn_send sendReq; fn_status getStatus; fn_clen getLen; fn_read readData; fn_del delReq, delTmpl;
+    fn_send sendReq; fn_status getStatus; fn_clen getLen; fn_read readData; fn_del delReq, delTmpl, delConn; fn_conn createConn;
 } H;
 
 static bool http_ready()
@@ -108,7 +109,8 @@ static bool http_ready()
         || !sym(hh, "sceHttpSetSendTimeOut", H.sendTo) || !sym(hh, "sceHttpSendRequest", H.sendReq)
         || !sym(hh, "sceHttpGetStatusCode", H.getStatus) || !sym(hh, "sceHttpGetResponseContentLength", H.getLen)
         || !sym(hh, "sceHttpReadData", H.readData) || !sym(hh, "sceHttpDeleteRequest", H.delReq)
-        || !sym(hh, "sceHttpDeleteTemplate", H.delTmpl))
+        || !sym(hh, "sceHttpDeleteTemplate", H.delTmpl) || !sym(hh, "sceHttpDeleteConnection", H.delConn)
+        || !sym(hh, "sceHttpCreateConnectionWithURL", H.createConn))
         return false;
     int r = netInit();
     logf_("client: sceNetInit -> 0x%x (an error here is normal, the network is already initialised)", (unsigned)r);
@@ -128,8 +130,11 @@ static int http_get(const std::string& url, std::string* mem, size_t maxMem, con
     if (!http_ready()) { set_state("error", "cannot load system HTTP library"); return 0; }
     int tmpl = H.createTemplate(H.ctx, "ps4torrentd", 2, 1);
     if (tmpl < 0) { logf_("client: sceHttpCreateTemplate 0x%x", (unsigned)tmpl); return 0; }
-    int req = H.createReq(tmpl, 0, url.c_str(), 0);
-    if (req < 0) { logf_("client: sceHttpCreateRequestWithURL 0x%x", (unsigned)req); H.delTmpl(tmpl); return 0; }
+    // В системной библиотеке запрос создаётся не из шаблона, а из соединения: шаблон -> соединение -> запрос
+    int conn = H.createConn(tmpl, url.c_str(), 1);
+    if (conn < 0) { logf_("client: sceHttpCreateConnectionWithURL 0x%x", (unsigned)conn); char b[48]; snprintf(b, sizeof(b), "connection failed 0x%x", (unsigned)conn); set_state("error", b); H.delTmpl(tmpl); return 0; }
+    int req = H.createReq(conn, 0, url.c_str(), 0);
+    if (req < 0) { logf_("client: sceHttpCreateRequestWithURL 0x%x (template 0x%x, connection 0x%x)", (unsigned)req, (unsigned)tmpl, (unsigned)conn); char b[48]; snprintf(b, sizeof(b), "request create failed 0x%x", (unsigned)req); set_state("error", b); H.delConn(conn); H.delTmpl(tmpl); return 0; }
     H.autoRedirect(req, 1);
     H.connTo(req, 15u * 1000000u); H.sendTo(req, 15u * 1000000u); H.recvTo(req, 30u * 1000000u);
     int code = 0;
@@ -138,16 +143,16 @@ static int http_get(const std::string& url, std::string* mem, size_t maxMem, con
         logf_("client: request to %s failed: 0x%x (0x80431xxx = TLS/certificate problem, 0x80436xxx = network)", url.c_str(), (unsigned)r);
         char b[48]; snprintf(b, sizeof(b), "request failed 0x%x", (unsigned)r);
         set_state("error", b);
-        H.delReq(req); H.delTmpl(tmpl);
+        H.delReq(req); H.delConn(conn); H.delTmpl(tmpl);
         return 0;
     }
     H.getStatus(req, &code);
     unsigned long long total = 0; int lr = 0;
     if (H.getLen(req, &lr, &total) != 0 || lr != 0) total = 0;
     logf_("client: %s -> HTTP %d, %llu bytes announced", url.c_str(), code, total);
-    if (code != 200) { char b[48]; snprintf(b, sizeof(b), "server answered HTTP %d", code); set_state("error", b); H.delReq(req); H.delTmpl(tmpl); return 0; }
+    if (code != 200) { char b[48]; snprintf(b, sizeof(b), "server answered HTTP %d", code); set_state("error", b); H.delReq(req); H.delConn(conn); H.delTmpl(tmpl); return 0; }
     int fd = -1;
-    if (file) { fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (fd < 0) { set_state("error", "cannot write the file in /data/pkg"); H.delReq(req); H.delTmpl(tmpl); return 0; } }
+    if (file) { fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (fd < 0) { set_state("error", "cannot write the file in /data/pkg"); H.delReq(req); H.delConn(conn); H.delTmpl(tmpl); return 0; } }
     char* buf = (char*)malloc(32768);
     unsigned long long got = 0;
     bool ok = buf != NULL;
@@ -164,7 +169,7 @@ static int http_get(const std::string& url, std::string* mem, size_t maxMem, con
     }
     free(buf);
     if (fd >= 0) close(fd);
-    H.delReq(req); H.delTmpl(tmpl);
+    H.delReq(req); H.delConn(conn); H.delTmpl(tmpl);
     if (ok && total && got != total) ok = false;
     if (!ok) { if (file) unlink(file); pthread_mutex_lock(&g_mu); if (g_state != "error") { g_state = "error"; g_msg = "download interrupted"; } pthread_mutex_unlock(&g_mu); return 0; }
     logf_("client: received %llu bytes", got);
