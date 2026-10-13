@@ -102,9 +102,7 @@
 "t_hmin": "{0} h {1} min",
 "t_dh": "{0} d {1} h",
 "btn_client_install": "install client",
-"btn_client_update": "update client ({0})",
-"client_check": "client: checking…",
-"client_download": "client: downloading {0}%",
+"btn_client_update": "update client",
 "client_install": "client: installing…",
 "client_retry": "client: error, retry"
 }

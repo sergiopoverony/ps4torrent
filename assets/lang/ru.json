@@ -102,9 +102,7 @@
 "t_hmin": "{0} ч {1} мин",
 "t_dh": "{0} д {1} ч",
 "btn_client_install": "установить клиент",
-"btn_client_update": "обновить клиент ({0})",
-"client_check": "клиент: проверка…",
-"client_download": "клиент: скачивание {0}%",
+"btn_client_update": "обновить клиент",
 "client_install": "клиент: установка…",
 "client_retry": "клиент: ошибка, повторить"
 }

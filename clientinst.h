@@ -6,5 +6,3 @@
 void clientinst_start(int httpPort);                 // запускает фоновый поток (один раз)
 std::string clientinst_json();                       // состояние для страницы: {"state":...}
 void clientinst_request_install();                   // кнопка «установить / обновить клиент»
-// Отдаёт скачанный пакет консоли по адресу /clientpkg/<имя> (с поддержкой Range). 1 = запрос обработан.
-int clientinst_serve(int c, const std::string& head, const std::string& path, bool headOnly);

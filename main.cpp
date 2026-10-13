@@ -72,7 +72,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.14"
+#define APP_VERSION "1.4.1.15"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -2605,13 +2605,9 @@ $('lng').onchange = function(){
 function renderClient(c){
   var b = $('clib'), t = '', dis = false, ttl = '';
   if (!c || c.state === 'off') { b.style.display = 'none'; return; }
-  if (c.state === 'check' || c.state === 'download' || c.state === 'install') {
-    t = c.state === 'download' ? T('client_download', c.pct) : c.state === 'install' ? T('client_install') : T('client_check');
-    dis = true;
-  } else if (c.state === 'error') { t = T('client_retry'); ttl = c.msg || ''; }
-  else if (!c.present) t = T('btn_client_install');
-  else if (c.outdated) t = T('btn_client_update', c.latest);
-  else { b.style.display = 'none'; return; }
+  if (c.state === 'install') { t = T('client_install'); dis = true; }
+  else if (c.state === 'error') { t = T('client_retry'); ttl = c.msg || ''; }
+  else t = c.present ? T('btn_client_update') : T('btn_client_install');
   b.style.display = ''; b.disabled = dis; b.textContent = t; b.title = ttl;
 }
 $('clib').onclick = function(){ api('/client_install').then(function(){ load(true); }).catch(function(){}); };
@@ -2947,9 +2943,6 @@ static void handle_client(int c)
     size_t q = url.find('?');
     if (q != std::string::npos) { path = url.substr(0, q); query = url.substr(q + 1); }
 
-    if (path.compare(0, 11, "/clientpkg/") == 0 && (method == "GET" || method == "HEAD")) {
-        if (clientinst_serve(c, head, path, method == "HEAD")) return;
-    }
     if (method != "GET" && method != "POST") { respond_status(c, 405, "Method Not Allowed", "text/plain", "GET or POST only\n"); return; }
 
     // Страница отдаётся всегда (в ней нет данных); всё остальное требует пароль, если он задан.
