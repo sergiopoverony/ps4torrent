@@ -112,6 +112,9 @@ static bool http_ready()
         || !sym(hh, "sceHttpDeleteTemplate", H.delTmpl) || !sym(hh, "sceHttpDeleteConnection", H.delConn)
         || !sym(hh, "sceHttpCreateConnectionWithURL", H.createConn))
         return false;
+    int hc = loadmod("/system/common/lib/libSceNetCtl.sprx");
+    fn_i_v netCtlInit = NULL;
+    if (sym(hc, "sceNetCtlInit", netCtlInit)) logf_("client: sceNetCtlInit -> 0x%x (an error is normal if it was already initialised)", (unsigned)netCtlInit());
     int r = netInit();
     logf_("client: sceNetInit -> 0x%x (an error here is normal, the network is already initialised)", (unsigned)r);
     int mem = poolCreate("ps4torrentd_http", 64 * 1024, 0);
@@ -125,17 +128,17 @@ static bool http_ready()
 }
 
 // Скачивает url. В память (если file == NULL, не больше maxMem байт) или в файл. Возвращает HTTP-код (200) или 0 при ошибке.
-static int http_get(const std::string& url, std::string* mem, size_t maxMem, const char* file, bool progress)
+static int http_get(const std::string& url, std::string* mem, size_t maxMem, const char* file, bool progress, bool noRedirect = false)
 {
     if (!http_ready()) { set_state("error", "cannot load system HTTP library"); return 0; }
-    int tmpl = H.createTemplate(H.ctx, "ps4torrentd", 2, 1);
+    int tmpl = H.createTemplate(H.ctx, "ps4torrentd", 2, 0);
     if (tmpl < 0) { logf_("client: sceHttpCreateTemplate 0x%x", (unsigned)tmpl); return 0; }
     // В системной библиотеке запрос создаётся не из шаблона, а из соединения: шаблон -> соединение -> запрос
     int conn = H.createConn(tmpl, url.c_str(), 1);
     if (conn < 0) { logf_("client: sceHttpCreateConnectionWithURL 0x%x", (unsigned)conn); char b[48]; snprintf(b, sizeof(b), "connection failed 0x%x", (unsigned)conn); set_state("error", b); H.delTmpl(tmpl); return 0; }
     int req = H.createReq(conn, 0, url.c_str(), 0);
     if (req < 0) { logf_("client: sceHttpCreateRequestWithURL 0x%x (template 0x%x, connection 0x%x)", (unsigned)req, (unsigned)tmpl, (unsigned)conn); char b[48]; snprintf(b, sizeof(b), "request create failed 0x%x", (unsigned)req); set_state("error", b); H.delConn(conn); H.delTmpl(tmpl); return 0; }
-    H.autoRedirect(req, 1);
+    H.autoRedirect(req, noRedirect ? 0 : 1);
     H.connTo(req, 15u * 1000000u); H.sendTo(req, 15u * 1000000u); H.recvTo(req, 30u * 1000000u);
     int code = 0;
     int r = H.sendReq(req, NULL, 0);
@@ -144,6 +147,15 @@ static int http_get(const std::string& url, std::string* mem, size_t maxMem, con
         char b[48]; snprintf(b, sizeof(b), "request failed 0x%x", (unsigned)r);
         set_state("error", b);
         H.delReq(req); H.delConn(conn); H.delTmpl(tmpl);
+        static bool diag = false;
+        if (!diag && url.compare(0, 8, "https://") == 0) {      // один раз: отличаем «не работает сама библиотека» от «не работает шифрование»
+            diag = true;
+            logf_("client: diagnostic - trying plain http://github.com/ without redirect (expected answer: HTTP 301)");
+            std::string keep, keepMsg; pthread_mutex_lock(&g_mu); keep = g_state; keepMsg = g_msg; pthread_mutex_unlock(&g_mu);
+            std::string tmpb;
+            http_get("http://github.com/", &tmpb, 4096, NULL, false, true);
+            set_state(keep.c_str(), keepMsg.c_str());
+        }
         return 0;
     }
     H.getStatus(req, &code);
