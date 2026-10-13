@@ -10,7 +10,7 @@ main{padding:0 14px 24px;display:grid;gap:10px}
 .c{background:var(--card);border-radius:10px;padding:12px 14px}
 .t{font-weight:600;word-break:break-word}.r{display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap}
 .bar{flex:1;min-width:140px;height:8px;background:rgba(127,127,127,.25);border-radius:4px;overflow:hidden}
-.bar i{display:block;height:100%;background:var(--ac)}.complete .bar i{background:var(--ok)}
+.bar i{display:block;height:100%;background:var(--ac);transition:width .25s linear}.complete .bar i{background:var(--ok)}
 button,.btn{background:transparent;color:var(--ac);border:1px solid var(--ac);border-radius:6px;padding:3px 10px;cursor:pointer;font:inherit;font-size:13px}
 .dng{color:var(--er);border-color:var(--er)}
 .go{color:var(--ok);border-color:var(--ok)}
@@ -165,6 +165,34 @@ function btn(c, h, label, cls, title){
     (title !== undefined ? ' data-t="' + E(title) + '"' : '') + (p ? ' disabled' : '') + '>' + (p ? '...' : label) + '</button>';
 }
 
+// ---- Плавность: данные от консоли приходят раз в 2 секунды, поэтому между опросами числа не прыгают, а сдвигаются:
+// скорость плавно подтягивается к новому значению, процент и полоса продолжают расти с показанной скоростью (предсказание,
+// не дальше чем на 5 с вперёд и никогда назад), остаток времени уменьшается по секундам. На каждом опросе всё сверяется с настоящими данными.
+var live = {};
+function livePoll(i){
+  var now = Date.now(), L = live[i.hash];
+  if (!L || i.status !== 'downloading') { live[i.hash] = { sp: i.speed_kb, tgt: i.speed_kb, done: i.done, base: i.done, polled: now, at: now, eta: i.eta_s }; return; }
+  if (i.done < L.done - i.size * 0.02) L.done = i.done;          // перепроверка или перезапуск: настоящий откат показываем
+  L.tgt = i.speed_kb; L.base = i.done; L.eta = i.eta_s; L.polled = now;
+  if (now === L.at) L.sp = L.tgt;                                 // время не идёт (тесты): без плавного перехода
+}
+function liveStep(i){
+  var L = live[i.hash]; if (!L) return;
+  var now = Date.now(), dt = now - L.at; L.at = now;
+  if (i.status !== 'downloading') { L.sp = L.tgt; L.done = L.base; return; }
+  if (dt > 0) L.sp += (L.tgt - L.sp) * (1 - Math.exp(-dt / 600));
+  var pred = L.base + L.sp * 1024 * (Math.min(now - L.polled, 5000) / 1000);
+  if (pred < L.base) pred = L.base;
+  if (pred > i.size) pred = i.size;
+  if (pred > L.done) L.done = pred;
+}
+function liveSpeed(i){ var L = live[i.hash]; return Math.round(L && i.status === 'downloading' ? L.sp : i.speed_kb); }
+function liveFrac(i){ var L = live[i.hash]; return (L && i.status === 'downloading' && i.size > 0) ? Math.min(L.done, i.size) / i.size * 100 : i.pct; }
+function livePct(i){ var p = Math.floor(liveFrac(i)); return (i.status === 'complete') ? 100 : (i.status === 'downloading' && p > 99 ? 99 : p); }
+function liveBar(i){ return Math.round(liveFrac(i) * 10) / 10; }
+function liveEta(i){ var L = live[i.hash]; if (!L || i.eta_s < 0) return i.eta_s; return Math.max(1, Math.round(L.eta - (Date.now() - L.polled) / 1000)); }
+function liveSpeedText(i){ return T('row_speed', liveSpeed(i), i.peers) + (i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : ''); }
+
 function row(i){
   var b = '';
   if (i.status === 'paused') b += btn('resume', i.hash, E(T('b_resume')));
@@ -172,18 +200,19 @@ function row(i){
   if (i.nfiles > 1 && i.status !== 'complete') b += btn('files', i.hash, E(T('b_files')));
   b += btn('delete', i.hash, E(T('b_remove')), 'dng', i.title);
   b += btn('delete_files', i.hash, E(T('b_remove_files')), 'dng', i.title);
-  var eta = i.status === 'downloading' ? T('row_eta', tm(i.eta_s)) : '';
+  var eta = i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : '';
   var fsel = i.nskip ? '<span class="s">' + E(T('row_files', i.nfiles - i.nskip, i.nfiles)) + '</span>' : '';
   var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">' + E(T('row_low_space')) + '</span>' : '';
   var stText = (i.status === 'paused' && i.mem_paused) ? T('st_mem_paused') : T('st_' + i.status);
   return '<div class="c ' + i.status + '"><div class="t">' + E(i.title) + '</div><div class="r">'
-    + '<span class="s">' + E(stText) + '</span>' + fsel + low + '<div class="bar"><i style="width:' + i.pct + '%"></i></div>'
-    + '<span>' + E(T('row_pct', i.pct, sz(i.size))) + '</span>'
-    + '<span class="mut">' + E(T('row_speed', i.speed_kb, i.peers) + eta) + '</span>' + b + '</div></div>';
+    + '<span class="s">' + E(stText) + '</span>' + fsel + low + '<div class="bar"><i data-lv="bar:' + i.hash + '" style="width:' + liveBar(i) + '%"></i></div>'
+    + '<span data-lv="pct:' + i.hash + '">' + E(T('row_pct', livePct(i), sz(i.size))) + '</span>'
+    + '<span class="mut" data-lv="spd:' + i.hash + '">' + E(liveSpeedText(i)) + '</span>' + b + '</div></div>';
 }
 
 function paint(){
   if (!lastData) return;
+  lastData.items.forEach(liveStep);
   var html = lastData.items.map(row).join('') || emptyHtml();
   if (html !== lastHtml) { $('m').innerHTML = html; lastHtml = html; }
 }
@@ -224,17 +253,44 @@ function smooth(key, v, running){
   return Math.round(s);
 }
 
+var sumRest = '';
+function renderSum(){
+  if (!lastData) return;
+  var L = live._all;
+  $('sum').textContent = T('s_speed', Math.round(L ? L.sp : lastData.speed_kb)) + sumRest;
+}
+// Каждые 250 мс: показанные числа сдвигаются к настоящим (без перерисовки списка, меняется только текст и ширина полосы).
+function animate(){
+  if (!lastData) return;
+  var L = live._all;
+  if (L) { var now = Date.now(), dt = now - L.at; L.at = now; if (dt > 0) L.sp += (L.tgt - L.sp) * (1 - Math.exp(-dt / 600)); }
+  renderSum();
+  var byHash = {};
+  lastData.items.forEach(function(i){ liveStep(i); byHash[i.hash] = i; });
+  var els = $('m').querySelectorAll('[data-lv]');
+  for (var k = 0; k < els.length; k++) {
+    var a = (els[k].getAttribute('data-lv') || '').split(':'), i = byHash[a[1]];
+    if (!i) continue;
+    if (a[0] === 'bar') els[k].style.width = liveBar(i) + '%';
+    else if (a[0] === 'pct') els[k].textContent = T('row_pct', livePct(i), sz(i.size));
+    else if (a[0] === 'spd') els[k].textContent = liveSpeedText(i);
+  }
+}
+
 function load(force){
   if (!force && (busy > 0 || Date.now() < holdUntil)) return;      // идёт действие или на кнопке палец: не мешаем
   api('/status').then(function(r){ return r.json(); })
   .then(function(d){
     lastData = d;
-    d.items.forEach(function(i){ i.speed_kb = smooth(i.hash, i.speed_kb, i.status === 'downloading'); });
+    d.items.forEach(function(i){ i.speed_kb = smooth(i.hash, i.speed_kb, i.status === 'downloading'); livePoll(i); });
     d.speed_kb = smooth('_all', d.speed_kb, d.speed_kb > 0);
+    var lt = Date.now(), la = live._all;
+    live._all = { tgt: d.speed_kb, sp: (la && d.speed_kb > 0 && lt !== la.at) ? la.sp : d.speed_kb, at: lt };
     var dr = d.drives.map(function(x){ return T('s_free', driveName(x), sz(x.free)); }).join(' | ')
       || (d.items.length ? T('s_nodrive') : T('s_nostorage'));
-    $('sum').textContent = T('s_speed', d.speed_kb) + ' | ' + dr + ' | ' + T('s_incoming', d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_off'))
+    sumRest = ' | ' + dr + ' | ' + (d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_incoming_off'))
       + (d.deleting ? ' | ' + T('s_deleting') : '');
+    renderSum();
     $('ft').textContent = 'ps4torrent v' + d.version + ' Created by SergioPoverony and Mr.Claude';
     var w = warnings(d), wb = $('warn');
     wb.style.display = w.length ? 'block' : 'none';
@@ -584,5 +640,5 @@ $('quitb').onclick = function(){
   api('/quit').then(function(){ say(T('quit_done'), false); }).catch(function(){ say(T('quit_done'), false); });
 };
 
-initLang(function(){ load(); setInterval(function(){ load(); }, 2000); });
+initLang(function(){ load(); setInterval(function(){ load(); }, 2000); setInterval(animate, 250); });
 </script></body></html>
