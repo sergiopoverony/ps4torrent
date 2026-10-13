@@ -48,7 +48,7 @@
 "dest_usb": "USB{0}",
 "dest_readonly": " (read-only: cannot be used)",
 "dest_free": " - {0} free",
-"console_memory": "console memory",
+"console_memory": "HDD",
 "sp_notenough": "Not enough free space: needs about {0}, only {1} is free here.",
 "sp_low": "Low free space: only {0} will be left after the download.",
 "adding": "Adding {0} torrent(s) to {1}...",
