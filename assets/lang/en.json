@@ -58,7 +58,7 @@
 "add_started": " and started",
 "add_notstarted": " (not started: press resume)",
 "upload_failed": "upload failed",
-"empty": "No torrents. Use \"+ .torrent\" or .torrent files into /mnt/usbN/torrents/",
+"empty": "No torrents. Use \"+ .torrent\" or put .torrent files into /mnt/usbN/torrents/",
 "b_resume": "resume",
 "b_pause": "pause",
 "b_files": "files",
