@@ -62,6 +62,7 @@
 #include "writer.h"
 #include "bigbuf.h"
 #include "tracker.h"
+#include "clientinst.h"
 
 #ifndef USB_BASE
 #define USB_BASE "/mnt/usb"          // /mnt/usb0, /mnt/usb1, ...
@@ -71,7 +72,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.11"
+#define APP_VERSION "1.4.1.12"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -1937,6 +1938,7 @@ static void build_snapshot()
              "\"deleting\":%d,\"net_ip\":\"%s\",\"net_restarts\":%d,\"net_heals\":%d,\"buf_kb\":%llu,\"version\":\"%s\"}", totalSpeed, g_maxParallel,
              incoming_port(), incoming_accepted(), (int)g_delJobs.size(), g_netIp.c_str(), g_netRestarts, g_httpHeals.load(), (unsigned long long)(bigbuf_total().load() >> 10), APP_VERSION);
     j += tail;
+    if (!j.empty() && j[j.size() - 1] == '}') { j.erase(j.size() - 1); j += ",\"client\":" + clientinst_json() + "}"; }
 #ifdef HOST_TEST
     {   // тесты: сколько памяти занято в обычной куче (на консоли куча ~10 МБ)
         struct mallinfo2 mi = mallinfo2();
@@ -2007,7 +2009,7 @@ button:disabled{opacity:.55;cursor:default}
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
-<button id="cfgb" data-i18n="btn_settings">settings</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
+<button id="cfgb" data-i18n="btn_settings">settings</button><button id="clib" style="display:none"></button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
 <div id="msg"></div>
 <div id="cfg" class="c">
@@ -2255,6 +2257,7 @@ function load(force){
     sumRest = ' | ' + dr + ' | ' + (d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_incoming_off'))
       + (d.deleting ? ' | ' + T('s_deleting') : '');
     renderSum();
+    renderClient(d.client);
     $('ft').textContent = 'ps4torrent v' + d.version + ' Created by SergioPoverony and Mr.Claude';
     var w = warnings(d), wb = $('warn');
     wb.style.display = w.length ? 'block' : 'none';
@@ -2598,6 +2601,21 @@ $('lng').onchange = function(){
   setLang(function(){ fillLangSelect(); lastHtml = ''; if (lastData) { paint(); } load(true); if ($('cfgi').textContent) $('cfgi').textContent = T('cfg_version', (lastData && lastData.version) || ''); });
 };
 
+// Кнопка «установить / обновить клиент» (экранное приложение для консоли); видна, только когда есть что делать.
+function renderClient(c){
+  var b = $('clib'), t = '', dis = false, ttl = '';
+  if (!c || c.state === 'off') { b.style.display = 'none'; return; }
+  if (c.state === 'check' || c.state === 'download' || c.state === 'install') {
+    t = c.state === 'download' ? T('client_download', c.pct) : c.state === 'install' ? T('client_install') : T('client_check');
+    dis = true;
+  } else if (c.state === 'error') { t = T('client_retry'); ttl = c.msg || ''; }
+  else if (!c.present) t = T('btn_client_install');
+  else if (c.outdated) t = T('btn_client_update', c.latest);
+  else { b.style.display = 'none'; return; }
+  b.style.display = ''; b.disabled = dis; b.textContent = t; b.title = ttl;
+}
+$('clib').onclick = function(){ api('/client_install').then(function(){ load(true); }).catch(function(){}); };
+
 // Выключение программы: красная кнопка, с подтверждением (то же, что адрес /quit).
 $('quitb').onclick = function(){
   if (!confirm(T('quit_confirm'))) return;
@@ -2929,6 +2947,9 @@ static void handle_client(int c)
     size_t q = url.find('?');
     if (q != std::string::npos) { path = url.substr(0, q); query = url.substr(q + 1); }
 
+    if (path.compare(0, 11, "/clientpkg/") == 0 && (method == "GET" || method == "HEAD")) {
+        if (clientinst_serve(c, head, path, method == "HEAD")) return;
+    }
     if (method != "GET" && method != "POST") { respond_status(c, 405, "Method Not Allowed", "text/plain", "GET or POST only\n"); return; }
 
     // Страница отдаётся всегда (в ней нет данных); всё остальное требует пароль, если он задан.
@@ -3053,6 +3074,9 @@ static void handle_client(int c)
         if (body.size() < clen) { respond_json_error(c, 408, "Request Timeout", "incomplete upload"); return; }
         body.resize(clen);
         handle_add(c, query, body);
+    } else if (path == "/client_install") {
+        clientinst_request_install();
+        respond(c, "application/json", "{\"ok\":true}");
     } else if (path == "/quit") {
         respond(c, "text/plain", "bye\n");
         g_quit = true;
@@ -3865,6 +3889,7 @@ int main()
         return 1;
     }
     net_init();
+    clientinst_start(HTTP_PORT);
     if (g_listenPort > 0) {
         int lerr = 0;
         if (incoming_start(g_listenPort, &lerr)) {
