@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.8"
+#define APP_VERSION "1.4.1.9"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -2272,12 +2272,12 @@ function destOptions(){
   (d.drives || []).forEach(function(x){ if (x.kind === 'internal') opts[0].free = x.free; });
   if (d.mounts) {
     d.mounts.forEach(function(m){
-      opts.push({ v: String(m.n), label: T('dest_usb', m.mount) + (m.writable === false ? T('dest_readonly') : ''), free: m.free, reserve: 2 * 1073741824 });
+      opts.push({ v: String(m.n), label: T('dest_usb', m.n) + (m.writable === false ? T('dest_readonly') : ''), free: m.free, reserve: 2 * 1073741824 });
     });
   } else {
     (d.drives || []).forEach(function(x){
       var m = x.root.match(/usb(\d+)\/torrents$/);
-      if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: T('dest_usb', x.root.replace('/torrents', '')), free: x.free, reserve: 2 * 1073741824 });
+      if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: T('dest_usb', m[1]), free: x.free, reserve: 2 * 1073741824 });
     });
   }
   opts.forEach(function(o){ if (o.free !== null) o.label += T('dest_free', sz(o.free)); });
