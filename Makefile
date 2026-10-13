@@ -9,7 +9,7 @@ else
 endif
 
 ELF ?= ps4torrentd.elf
-SRCS := main.cpp assets.S writer.cpp incoming.cpp log.cpp net.cpp bencode.cpp sha1.cpp torrent.cpp tracker.cpp storage.cpp download.cpp resume.cpp swarm.cpp
+SRCS := main.cpp assets.S writer.cpp incoming.cpp log.cpp net.cpp bencode.cpp sha1.cpp torrent.cpp tracker.cpp storage.cpp download.cpp resume.cpp swarm.cpp lang_gen.cpp lang_gen.S
 CXXFLAGS := -std=c++17 -O2 -Wall
 
 # Сборка с вшитым файлом (для проверки размера и, позже, для PKG):
@@ -24,11 +24,15 @@ endif
 
 all: $(ELF)
 
-$(ELF): $(SRCS) $(wildcard *.h) $(wildcard assets/*)
+# Языковые файлы assets/lang/*.json вшиваются в программу (lang_gen.* создаёт mklang.sh)
+lang_gen.S lang_gen.cpp: $(wildcard assets/lang/*.json) mklang.sh
+	sh ./mklang.sh
+
+$(ELF): $(SRCS) $(wildcard *.h) $(wildcard assets/*) $(wildcard assets/lang/*)
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS)
 
 clean:
-	rm -f $(ELF)
+	rm -f $(ELF) lang_gen.S lang_gen.cpp
 
 # отправка на консоль: make send PS4_HOST=IP
 send: $(ELF)

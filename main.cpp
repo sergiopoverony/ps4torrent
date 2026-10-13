@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.6"
+#define APP_VERSION "1.4.1.7"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -80,6 +80,9 @@
 extern "C" {
 extern const unsigned char ps4_favicon_start[], ps4_favicon_end[];
 extern const unsigned char ps4_logo_start[], ps4_logo_end[];
+struct LangFile { const char* code; const unsigned char* start; const unsigned char* end; };   // вшитые файлы языков (создаёт mklang.sh)
+extern const LangFile g_langFiles[];
+extern const int g_langCount;
 extern const unsigned char ps4_notify_start[], ps4_notify_end[];
 }
 // Завершённые раздачи показываются в списке и после перезапуска (их .torrent лежит в complete/), пока их не удалят. Обычной памяти
@@ -275,6 +278,7 @@ struct Item {
     std::string root;        // /mnt/usbN/torrents
     Torrent t;
     bool paused, offline, complete, failed, running, haveValid;
+    bool memPaused;          // поставлена на паузу автоматически из-за нехватки памяти консоли (снимается сама)
     uint32_t have;
     int checkPct, speedKB, peers;
     uint64_t sessBytes;      // сколько байт получено за текущий запуск загрузки
@@ -291,7 +295,7 @@ struct Item {
     std::string selPendingTxt;
 
     Item() : paused(false), offline(false), complete(false), failed(false), running(false),
-             haveValid(false), have(0), checkPct(0), speedKB(0), peers(0), sessBytes(0), retryAt(0), notBefore(0), wantBytes(0), skipCount(0), selPending(false) {}
+             haveValid(false), memPaused(false), have(0), checkPct(0), speedKB(0), peers(0), sessBytes(0), retryAt(0), notBefore(0), wantBytes(0), skipCount(0), selPending(false) {}
 
     std::string dlDir() const { return root + "/downloads"; }
     std::string doneDir() const { return root + "/complete"; }
@@ -977,6 +981,103 @@ static int adopt_incoming(const unsigned char infoHash[20], int fd, const std::s
     return 0;
 }
 
+// ---------------------------------------------------------------- автопауза при нехватке памяти консоли
+// Игра может показать «не хватает памяти», когда загрузок много. Следим за свободной «гибкой» памятью консоли и, если она
+// заметно упала и стала малой, ставим на паузу по одной самой слабой загрузке; когда память освободилась, возвращаем их
+// по одной. Пороги можно поменять при сборке (-DMEM_LOW_MB=...), реальные значения пишутся в лог строкой "alive".
+#ifndef MEM_LOW_MB
+#define MEM_LOW_MB 64          // свободно меньше этого И память убыла не меньше MEM_DROP_MB от недавнего максимума = нехватка
+#endif
+#ifndef MEM_DROP_MB
+#define MEM_DROP_MB 96
+#endif
+#ifndef MEM_PAUSE_GAP_S
+#define MEM_PAUSE_GAP_S 20     // после паузы ждём столько секунд, прежде чем ставить на паузу ещё одну
+#endif
+#ifndef MEM_RESUME_GAP_S
+#define MEM_RESUME_GAP_S 45    // между возвратами двух загрузок не меньше стольких секунд
+#endif
+#ifndef MEM_EVENT_HOLD_S
+#define MEM_EVENT_HOLD_S 120   // после bad_alloc ничего не возвращаем столько секунд
+#endif
+#ifndef MEM_RESUME_AFTER_S
+#define MEM_RESUME_AFTER_S 90  // память должна быть в порядке столько секунд подряд, чтобы вернуть одну загрузку
+#endif
+
+#ifdef HOST_TEST
+static long long free_flex_bytes()       // тесты: значение из файла (МБ); нет файла = неизвестно
+{
+    FILE* f = fopen("/tmp/ft/fake_flex_mb", "r");
+    long long mb = -1;
+    if (f) { if (fscanf(f, "%lld", &mb) != 1) mb = -1; fclose(f); }
+    return mb < 0 ? -1 : mb * 1048576LL;
+}
+#else
+extern "C" int sceKernelAvailableFlexibleMemorySize(size_t* sizeOut);
+static long long free_flex_bytes()
+{
+    size_t sz = 0;
+    if (sceKernelAvailableFlexibleMemorySize(&sz) != 0) return -1;
+    return (long long)sz;
+}
+#endif
+
+static std::vector<std::string> g_memStack;       // хэши, поставленные на паузу из-за памяти (последний = самый сильный)
+static std::atomic<bool> g_memEvent(false);       // в главном цикле кончилась память (bad_alloc)
+static long long g_memFree = -1, g_memPeak = 0;
+static time_t g_memPeakAt = 0, g_memNext = 0, g_memLastPause = 0, g_memLastResume = 0, g_memOkSince = 0, g_memEventAt = 0;
+
+static void memory_guard(time_t now)
+{
+    bool ev = g_memEvent.exchange(false);
+    if (ev) { g_memEventAt = now; g_memNext = 0; }
+    if (now < g_memNext) return;
+    g_memNext = now + 5;
+    long long f = free_flex_bytes();
+    g_memFree = f;
+    if (f < 0 && !ev) return;                                              // не знаем, сколько памяти: ничего не делаем
+    if (f >= 0 && (f >= g_memPeak || now - g_memPeakAt > 1800)) { g_memPeak = f; g_memPeakAt = now; }
+    const long long low = (long long)MEM_LOW_MB << 20, drop = (long long)MEM_DROP_MB << 20;
+    bool pressure = ev || (f >= 0 && f < low && g_memPeak - f >= drop);
+    if (pressure) {
+        g_memOkSince = 0;
+        if (now - g_memLastPause < MEM_PAUSE_GAP_S) return;
+        Job* weak = NULL;
+        for (size_t i = 0; i < g_active.size(); i++) {
+            Job* j = g_active[i];
+            if (!j->it->running || j->it->paused || j->it->offline) continue;
+            if (!weak || j->it->speedKB < weak->it->speedKB || (j->it->speedKB == weak->it->speedKB && j->it->have < weak->it->have)) weak = j;
+        }
+        if (!weak) return;
+        Item* it = weak->it;
+        it->paused = true;
+        it->memPaused = true;
+        g_memStack.push_back(it->t.infoHashHex);
+        g_memLastPause = now;
+        logf_("low memory (free %lld MB, recent maximum %lld MB%s): %s paused automatically (%d KB/s); it resumes when memory is free again",
+              f < 0 ? -1LL : f >> 20, g_memPeak >> 20, ev ? ", out of memory in the main loop" : "", it->title.c_str(), it->speedKB);
+        notify("ps4torrent: low memory, download paused: %s", it->title.c_str());
+        return;
+    }
+    if (g_memStack.empty()) { g_memOkSince = 0; return; }
+    bool ok = f >= 0 && (f >= 2 * low || g_memPeak - f < drop / 2);
+    if (!ok) { g_memOkSince = 0; return; }
+    if (g_memOkSince == 0) g_memOkSince = now;
+    if (now - g_memOkSince < MEM_RESUME_AFTER_S || now - g_memLastResume < MEM_RESUME_GAP_S || now - g_memLastPause < MEM_RESUME_AFTER_S || now - g_memEventAt < MEM_EVENT_HOLD_S) return;
+    while (!g_memStack.empty()) {
+        Item* it = find_item_by_hash(g_memStack.back());
+        g_memStack.pop_back();
+        if (!it || !it->memPaused) continue;                               // уже вернули вручную или удалили
+        it->memPaused = false;
+        it->paused = false;
+        it->failed = false;
+        it->retryAt = 0;
+        g_memLastResume = now;
+        logf_("memory is free again (%lld MB): %s resumes", f >> 20, it->title.c_str());
+        break;
+    }
+}
+
 // Один проход общего цикла загрузок. Внутри один select() на все раздачи (он же служит паузой).
 static void run_downloads(time_t now)
 {
@@ -1237,7 +1338,7 @@ static void session_sync(time_t now, bool force)
     if (!g_resumeSession.load()) return;
     for (size_t i = 0; i < g_items.size(); i++) {
         const Item* it = g_items[i];
-        if (!it->complete && !it->paused) g_sessionWant.insert(it->t.infoHashHex);
+        if (!it->complete && (!it->paused || it->memPaused)) g_sessionWant.insert(it->t.infoHashHex);
         else g_sessionWant.erase(it->t.infoHashHex);
     }
     if (g_sessionWant == g_sessionSaved) return;
@@ -1808,10 +1909,10 @@ static void build_snapshot()
         char buf[480];
         snprintf(buf, sizeof(buf),
                  "%s{\"hash\":\"%s\",\"status\":\"%s\",\"size\":%llu,\"done\":%llu,\"pct\":%d,"
-                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"root\":\"",
+                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"mem_paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"root\":\"",
                  i ? "," : "", it.t.infoHashHex.c_str(), status_name(it),
                  (unsigned long long)item_size_bytes(it), (unsigned long long)done, pct,
-                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it));
+                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", it.memPaused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it));
         j += buf;
         j += json_escape(it.root) + "\",\"title\":\"" + json_escape(it.title) + "\"}";
     }
@@ -1892,37 +1993,39 @@ button:disabled{opacity:.55;cursor:default}
 #msg{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:var(--card);display:none}
 #cfg{margin:0 14px 10px;display:none}
 #cfg label{display:inline-flex;gap:6px;align-items:center;margin-right:14px}
+#cfg select{background:var(--card);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
 #cfg input{width:70px;background:transparent;color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
 </style></head><body>
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
-<label class="btn">+ .torrent<input id="up" type="file" accept=".torrent" multiple hidden></label>
-<button id="allgo">start all</button><button id="allstop">pause all</button>
-<button id="cfgb">settings</button></header>
+<label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
+<button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
+<button id="cfgb" data-i18n="btn_settings">settings</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
 <div id="msg"></div>
 <div id="cfg" class="c">
-<label>parallel downloads <input id="mp" type="number" min="1" max="25"></label>
-<label>listen port (0 = off) <input id="lp" type="number" min="0" max="65535"></label>
-<label><input id="as" type="checkbox" style="width:auto"> start tasks automatically</label>
-<label><input id="rs" type="checkbox" style="width:auto"> resume interrupted downloads after a restart</label>
-<button id="cfgs">save</button> <span class="mut" id="cfgi"></span></div>
+<label><span data-i18n="cfg_parallel">parallel downloads</span> <input id="mp" type="number" min="1" max="25"></label>
+<label><span data-i18n="cfg_port">listen port (0 = off)</span> <input id="lp" type="number" min="0" max="65535"></label>
+<label><input id="as" type="checkbox" style="width:auto"> <span data-i18n="cfg_autostart">start tasks automatically</span></label>
+<label><input id="rs" type="checkbox" style="width:auto"> <span data-i18n="cfg_resume">resume interrupted downloads after a restart</span></label>
+<label><span data-i18n="cfg_language">language</span> <select id="lng"></select></label>
+<button id="cfgs" data-i18n="cfg_save">save</button> <span class="mut" id="cfgi"></span></div>
 <div id="dlg" class="ov"><div class="dl c">
-<h2>Add torrent</h2>
+<h2 data-i18n="dlg_title">Add torrent</h2>
 <div id="dfiles"></div>
-<div style="margin-top:12px"><label>Save to <select id="dsel"></select></label></div>
+<div style="margin-top:12px"><label><span data-i18n="dlg_save_to">Save to</span> <select id="dsel"></select></label></div>
 <div id="dinfo" class="mut" style="margin-top:6px"></div>
 <div id="dwarn" class="warn" style="margin:8px 0 0"></div>
-<div style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> Start downloading right away</label></div>
-<div class="row"><button id="dcancel" class="dng">Cancel</button><button id="dgo" class="go">Download</button></div>
+<div style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> <span data-i18n="dlg_start_now">Start downloading right away</span></label></div>
+<div class="row"><button id="dcancel" class="dng" data-i18n="dlg_cancel">Cancel</button><button id="dgo" class="go">Download</button></div>
 </div></div>
 <div id="dlg2" class="ov"><div class="dl dl2 c">
 <h2 id="f2title">Select files to download</h2>
 <div id="f2info" class="mut"></div>
 <div id="f2warn" class="warn" style="margin:8px 0 0"></div>
 <div id="f2list" class="fl"></div>
-<div class="row"><button id="f2all">Select all</button><button id="f2none">Deselect all</button><button id="f2back">Back</button><button id="f2go" class="go">Start download</button><button id="f2cancel" class="dng">Cancel</button></div>
+<div class="row"><button id="f2all" data-i18n="f2_all">Select all</button><button id="f2none" data-i18n="f2_none">Deselect all</button><button id="f2back" data-i18n="f2_back">Back</button><button id="f2go" class="go">Start download</button><button id="f2cancel" class="dng" data-i18n="dlg_cancel">Cancel</button></div>
 </div></div>
-<main id="m"><div class="c">loading...</div></main>
+<main id="m"><div class="c" data-i18n="loading">loading...</div></main>
 <footer id="ft">ps4torrent v1.0 Created by SergioPoverony and Mr.Claude</footer>
 <script>
 var TK = '';
@@ -1930,8 +2033,56 @@ try { TK = sessionStorage.getItem('tk') || ''; } catch (e) {}
 var hm = location.hash.match(/token=([^&]*)/);
 if (hm) { TK = decodeURIComponent(hm[1]); try { sessionStorage.setItem('tk', TK); } catch (e) {} }
 
-function sz(n){var u=['B','KB','MB','GB','TB'],i=0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
-function tm(s){if(s<0)return'-';if(s<60)return'<1 min';var m=Math.round(s/60);if(m<60)return m+' min';var h=Math.floor(m/60);m=m%60;if(h<48)return h+' h '+m+' min';return Math.floor(h/24)+' d '+(h%24)+' h'}
+// ---- Язык: тексты лежат в файлах assets/lang/*.json (вшиваются в программу), страница берёт нужный по языку браузера.
+var LD = {}, LE = {}, LANGS = [], LCODE = 'en';
+function T(k){
+  var s = LD[k]; if (s === undefined) s = LE[k]; if (s === undefined) s = k;
+  for (var i = 1; i < arguments.length; i++) s = s.split('{' + (i - 1) + '}').join(String(arguments[i]));
+  return s;
+}
+function applyStatic(){
+  var els = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < els.length; i++) {
+    els[i].textContent = T(els[i].getAttribute('data-i18n'));
+    var tt = els[i].getAttribute('data-ititle'); if (tt) els[i].title = T(tt);
+  }
+  $('f2back').textContent = T('f2_back');
+}
+function getJson(url){ return fetch(url).then(function(r){ if (!r.ok) throw new Error('lang'); return r.json(); }); }
+function pickLang(){
+  var pref = 'auto';
+  try { pref = localStorage.getItem('lang') || 'auto'; } catch (e) {}
+  var codes = LANGS.map(function(x){ return x.code; });
+  if (pref !== 'auto' && codes.indexOf(pref) >= 0) return pref;
+  var nav = ((navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || 'en']);
+  for (var i = 0; i < nav.length; i++) {
+    var c = String(nav[i]).toLowerCase();
+    if (codes.indexOf(c) >= 0) return c;
+    var p = c.split('-')[0];
+    if (codes.indexOf(p) >= 0) return p;
+  }
+  return 'en';
+}
+function setLang(then){
+  LCODE = pickLang();
+  var jobs = [getJson('/lang/en.json').then(function(d){ LE = d; })];
+  if (LCODE !== 'en') jobs.push(getJson('/lang/' + LCODE + '.json').then(function(d){ LD = d; }));
+  else LD = {};
+  Promise.all(jobs).catch(function(){}).then(function(){ applyStatic(); if (then) then(); });
+}
+function initLang(then){
+  getJson('/lang/index.json').then(function(l){ LANGS = l; }).catch(function(){ LANGS = [{ code: 'en', name: 'English' }]; }).then(function(){ setLang(then); });
+}
+function fillLangSelect(){
+  var pref = 'auto';
+  try { pref = localStorage.getItem('lang') || 'auto'; } catch (e) {}
+  $('lng').innerHTML = '<option value="auto">' + E(T('cfg_lang_auto')) + '</option>' + LANGS.map(function(x){ return '<option value="' + E(x.code) + '">' + E(x.name) + '</option>'; }).join('');
+  $('lng').value = pref;
+  if ($('lng').value !== pref) $('lng').value = 'auto';
+}
+
+function sz(n){var u=[T('u_B'),T('u_KB'),T('u_MB'),T('u_GB'),T('u_TB')],i=0;while(n>=1024&&i<4){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+function tm(s){if(s<0)return'-';if(s<60)return T('t_lt1');var m=Math.round(s/60);if(m<60)return T('t_min',m);var h=Math.floor(m/60);m=m%60;if(h<48)return T('t_hmin',h,m);return T('t_dh',Math.floor(h/24),h%24)}
 function E(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function $(id){return document.getElementById(id)}
 
@@ -1946,7 +2097,7 @@ function api(path, opts, retried){
   var url = path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(TK);
   return fetch(url, opts || {}).then(function(r){
     if (r.status === 401 && !retried) {
-      var t = prompt('Access token:');
+      var t = prompt(T('token_prompt'));
       if (t === null) return r;
       TK = t; try { sessionStorage.setItem('tk', TK); } catch (e) {}
       return api(path, opts, true);
@@ -1962,7 +2113,7 @@ var busy = 0;            // сколько действий в работе; п�
 var holdUntil = 0;       // до этого момента (мс) список не перерисовывается: палец или мышь на кнопке
 var lastHtml = '';       // что сейчас показано в списке (если не изменилось, DOM не трогаем)
 var lastData = null;     // последнее состояние, полученное от консоли
-var EMPTY = '<div class="c">No torrents. Put .torrent files into /mnt/usbN/torrents/ or use "+ .torrent"</div>';
+function emptyHtml(){ return '<div class="c">' + E(T('empty')) + '</div>'; }
 
 function btn(c, h, label, cls, title){
   var p = pending[c + ':' + h];
@@ -1972,42 +2123,45 @@ function btn(c, h, label, cls, title){
 
 function row(i){
   var b = '';
-  if (i.status === 'paused') b += btn('resume', i.hash, 'resume');
-  else if (i.status !== 'complete' && i.status !== 'offline') b += btn('pause', i.hash, 'pause');
-  if (i.nfiles > 1 && i.status !== 'complete') b += btn('files', i.hash, 'files');
-  b += btn('delete', i.hash, 'remove', 'dng', i.title);
-  b += btn('delete_files', i.hash, 'remove + files', 'dng', i.title);
-  var eta = i.status === 'downloading' ? ', ETA ' + tm(i.eta_s) : '';
-  var fsel = i.nskip ? '<span class="s">' + (i.nfiles - i.nskip) + '/' + i.nfiles + ' files</span>' : '';
-  var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">low space</span>' : '';
+  if (i.status === 'paused') b += btn('resume', i.hash, E(T('b_resume')));
+  else if (i.status !== 'complete' && i.status !== 'offline') b += btn('pause', i.hash, E(T('b_pause')));
+  if (i.nfiles > 1 && i.status !== 'complete') b += btn('files', i.hash, E(T('b_files')));
+  b += btn('delete', i.hash, E(T('b_remove')), 'dng', i.title);
+  b += btn('delete_files', i.hash, E(T('b_remove_files')), 'dng', i.title);
+  var eta = i.status === 'downloading' ? T('row_eta', tm(i.eta_s)) : '';
+  var fsel = i.nskip ? '<span class="s">' + E(T('row_files', i.nfiles - i.nskip, i.nfiles)) + '</span>' : '';
+  var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">' + E(T('row_low_space')) + '</span>' : '';
+  var stText = (i.status === 'paused' && i.mem_paused) ? T('st_mem_paused') : T('st_' + i.status);
   return '<div class="c ' + i.status + '"><div class="t">' + E(i.title) + '</div><div class="r">'
-    + '<span class="s">' + i.status + '</span>' + fsel + low + '<div class="bar"><i style="width:' + i.pct + '%"></i></div>'
-    + '<span>' + i.pct + '% of ' + sz(i.size) + '</span>'
-    + '<span class="mut">' + i.speed_kb + ' KB/s, ' + i.peers + ' peers' + eta + '</span>' + b + '</div></div>';
+    + '<span class="s">' + E(stText) + '</span>' + fsel + low + '<div class="bar"><i style="width:' + i.pct + '%"></i></div>'
+    + '<span>' + E(T('row_pct', i.pct, sz(i.size))) + '</span>'
+    + '<span class="mut">' + E(T('row_speed', i.speed_kb, i.peers) + eta) + '</span>' + b + '</div></div>';
 }
 
 function paint(){
   if (!lastData) return;
-  var html = lastData.items.map(row).join('') || EMPTY;
+  var html = lastData.items.map(row).join('') || emptyHtml();
   if (html !== lastHtml) { $('m').innerHTML = html; lastHtml = html; }
 }
 
-function driveName(x){ return x.kind === 'internal' ? 'console memory' : x.root.replace('/torrents', ''); }
+function driveName(x){ return x.kind === 'internal' ? T('console_memory') : x.root.replace('/torrents', ''); }
 
 function warnings(d){
   var w = [], off = {}, cnt = 0;
   d.items.forEach(function(i){ if (i.status === 'offline') { off[i.root] = (off[i.root] || 0) + 1; cnt++; } });
   Object.keys(off).forEach(function(r){
-    w.push('Storage not found: ' + (r.indexOf('/data/') === 0 ? 'console memory' : r.replace('/torrents', '')) + ' (' + off[r] + ' task(s) waiting). They continue by themselves when it returns.');
+    w.push(T('w_storage', r.indexOf('/data/') === 0 ? T('console_memory') : r.replace('/torrents', ''), off[r]));
   });
-  d.drives.forEach(function(x){ if (x.low) w.push('Low free space on ' + driveName(x) + ': only ' + sz(x.free) + ' left'); });
+  d.drives.forEach(function(x){ if (x.low) w.push(T('w_lowfree', driveName(x), sz(x.free))); });
   d.items.forEach(function(i){
     if (!i.low_space) return;
     var left = Math.max(0, i.size - i.done), dr = d.drives.filter(function(x){ return x.root === i.root; })[0];
-    w.push('"' + i.title + '" still needs about ' + sz(left) + (dr ? ', but only ' + sz(dr.free) + ' is free' : ''));
+    w.push(T('w_needs', i.title, sz(left)) + (dr ? T('w_needs_free', sz(dr.free)) : ''));
   });
   var off = d.items.filter(function(i){ return i.status === 'offline'; }).length;
-  if (off) w.push(off + ' task(s) wait for the USB drive. After console sleep it can take a few minutes to come back; if it does not, re-plug it. The tasks continue by themselves');
+  if (off) w.push(T('w_usb', off));
+  var mp = d.items.filter(function(i){ return i.mem_paused; }).length;
+  if (mp) w.push(T('w_mem', mp));
   return w;
 }
 
@@ -2028,17 +2182,17 @@ function load(force){
     lastData = d;
     d.items.forEach(function(i){ i.speed_kb = smooth(i.hash, i.speed_kb, i.status === 'downloading'); });
     d.speed_kb = smooth('_all', d.speed_kb, d.speed_kb > 0);
-    var dr = d.drives.map(function(x){ return driveName(x) + ' free ' + sz(x.free); }).join(' | ')
-      || (d.items.length ? 'USB DRIVE NOT FOUND: tasks continue by themselves when it returns (check or re-plug the drive)' : 'no storage with a torrents folder');
-    $('sum').textContent = d.speed_kb + ' KB/s | ' + dr + ' | incoming: ' + (d.listen_port ? d.incoming + ' peers (port ' + d.listen_port + ')' : 'off')
-      + (d.deleting ? ' | deleting files...' : '');
+    var dr = d.drives.map(function(x){ return T('s_free', driveName(x), sz(x.free)); }).join(' | ')
+      || (d.items.length ? T('s_nodrive') : T('s_nostorage'));
+    $('sum').textContent = T('s_speed', d.speed_kb) + ' | ' + dr + ' | ' + T('s_incoming', d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_off'))
+      + (d.deleting ? ' | ' + T('s_deleting') : '');
     $('ft').textContent = 'ps4torrent v' + d.version + ' Created by SergioPoverony and Mr.Claude';
     var w = warnings(d), wb = $('warn');
     wb.style.display = w.length ? 'block' : 'none';
     wb.textContent = w.join(' | ');
     if (busy > 0 || (!force && Date.now() < holdUntil)) return;     // пока ждали ответ, началось действие: список не трогаем
     paint();
-  }).catch(function(){ $('sum').textContent = 'no connection'; });
+  }).catch(function(){ $('sum').textContent = T('no_connection'); });
 }
 
 function withTimeout(p, ms){
@@ -2053,10 +2207,10 @@ function act(c, h, t){
   var k = c + ':' + h, q;
   if (pending[k]) return;                                           // уже выполняется: повторное нажатие игнорируем
   if (c === 'delete') {
-    if (!confirm('Remove from the list? Downloaded files stay on the drive.\n\n' + t)) return;
+    if (!confirm(T('confirm_remove', t))) return;
     q = '/api/delete?hash=' + h;
   } else if (c === 'delete_files') {
-    if (!confirm('Remove AND delete the downloaded files from the drive?\n\n' + t)) return;
+    if (!confirm(T('confirm_remove_files', t))) return;
     q = '/api/delete?files=1&hash=' + h;
   } else q = '/api/' + c + '?hash=' + h;
 
@@ -2064,8 +2218,8 @@ function act(c, h, t){
   paint();                                                          // кнопка сразу показывает "..."
   var finish = function(){ delete pending[k]; busy--; load(true); };  // один раз перерисовываем актуальное состояние
   withTimeout(api(q).then(function(r){ return r.json(); }), 10000)
-    .then(function(d){ if (!d.ok) say(d.error || 'failed', true); finish(); })
-    .catch(function(){ say('No answer from the console', true); finish(); });
+    .then(function(d){ if (!d.ok) say(d.error || T('failed'), true); finish(); })
+    .catch(function(){ say(T('noanswer'), true); finish(); });
 }
 
 $('m').onclick = function(e){
@@ -2113,28 +2267,28 @@ function torrentInfo(buf){
 }
 
 function destOptions(){
-  var opts = [{ v: 'internal', label: 'Console memory (system disk)', free: null, reserve: 5 * 1073741824 }];
+  var opts = [{ v: 'internal', label: T('dest_internal'), free: null, reserve: 5 * 1073741824 }];
   var d = lastData || {};
   (d.drives || []).forEach(function(x){ if (x.kind === 'internal') opts[0].free = x.free; });
   if (d.mounts) {
     d.mounts.forEach(function(m){
-      opts.push({ v: String(m.n), label: 'USB drive ' + m.mount + (m.writable === false ? ' (read-only: cannot be used)' : ''), free: m.free, reserve: 2 * 1073741824 });
+      opts.push({ v: String(m.n), label: T('dest_usb', m.mount) + (m.writable === false ? T('dest_readonly') : ''), free: m.free, reserve: 2 * 1073741824 });
     });
   } else {
     (d.drives || []).forEach(function(x){
       var m = x.root.match(/usb(\d+)\/torrents$/);
-      if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: 'USB drive ' + x.root.replace('/torrents', ''), free: x.free, reserve: 2 * 1073741824 });
+      if (x.kind !== 'internal' && m) opts.push({ v: m[1], label: T('dest_usb', x.root.replace('/torrents', '')), free: x.free, reserve: 2 * 1073741824 });
     });
   }
-  opts.forEach(function(o){ if (o.free !== null) o.label += ' - ' + sz(o.free) + ' free'; });
+  opts.forEach(function(o){ if (o.free !== null) o.label += T('dest_free', sz(o.free)); });
   return opts;
 }
 
 // Предупреждение о месте: нужно total байт на выбранном месте (o).
 function spaceWarning(o, total){
   if (!o || o.free === null || !total) return '';
-  if (total > o.free) return 'Not enough free space: needs about ' + sz(total) + ', only ' + sz(o.free) + ' is free here.';
-  if (o.free - total < o.reserve) return 'Low free space: only ' + sz(o.free - total) + ' will be left after the download.';
+  if (total > o.free) return T('sp_notenough', sz(total), sz(o.free));
+  if (o.free - total < o.reserve) return T('sp_low', sz(o.free - total));
   return '';
 }
 function destByValue(v){ var opts = destOptions(); return opts.filter(function(x){ return x.v === v; })[0] || opts[0]; }
@@ -2144,19 +2298,19 @@ function anyMulti(){ return dlgFiles.some(function(f){ return f.info && f.info.f
 function updateDlg(){
   var o = destByValue($('dsel').value), total = 0, good = 0;
   dlgFiles.forEach(function(f){ if (f.info) { total += f.info.size; good++; } });
-  $('dinfo').textContent = good ? 'Total size: ' + sz(total) + (o.free !== null ? ', free: ' + sz(o.free) : '') : '';
+  $('dinfo').textContent = good ? T('dlg_total', sz(total)) + (o.free !== null ? T('dlg_total_free', sz(o.free)) : '') : '';
   var w = $('dwarn'), msg = good ? spaceWarning(o, total) : '';
   w.style.display = msg ? 'block' : 'none';
   w.textContent = msg;
   $('dgo').disabled = good === 0;
-  $('dgo').textContent = anyMulti() ? 'Next' : 'Download';
+  $('dgo').textContent = anyMulti() ? T('dlg_next') : T('dlg_download');
 }
 
 function openDialog(files){
   dlgFiles = files;
   $('dfiles').innerHTML = files.map(function(f){
-    return '<div class="f">' + (f.info ? E(f.info.name) + ' <span class="mut">(' + sz(f.info.size) + (f.info.files.length > 1 ? ', ' + f.info.files.length + ' files' : '') + ')</span>'
-      : E(f.name) + ' <span style="color:var(--er)">- not a valid .torrent</span>') + '</div>';
+    return '<div class="f">' + (f.info ? E(f.info.name) + ' <span class="mut">(' + sz(f.info.size) + (f.info.files.length > 1 ? T('dlg_files_n', f.info.files.length) : '') + ')</span>'
+      : E(f.name) + ' <span style="color:var(--er)">' + E(T('dlg_invalid')) + '</span>') + '</div>';
   }).join('');
   $('dsel').innerHTML = destOptions().map(function(o){ return '<option value="' + o.v + '">' + E(o.label) + '</option>'; }).join('');
   $('dsel').value = 'internal';                                    // по умолчанию: система консоли
@@ -2190,8 +2344,8 @@ function f2Totals(){
 }
 function refresh2(){
   var t = f2Totals(), msg = '';
-  $('f2info').textContent = 'Selected: ' + t.cnt + ' of ' + t.all + ' files, ' + sz(t.size);
-  if (t.bad) msg = f2.groups.length > 1 ? 'Select at least one file in every torrent.' : 'Select at least one file.';
+  $('f2info').textContent = T('f2_selected', t.cnt, t.all, sz(t.size));
+  if (t.bad) msg = f2.groups.length > 1 ? T('f2_need_each') : T('f2_need_one');
   else if (f2.mode === 'add') msg = spaceWarning(destByValue(f2.drive), t.size);
   $('f2warn').style.display = msg ? 'block' : 'none';
   $('f2warn').textContent = msg;
@@ -2224,14 +2378,14 @@ function renderFiles2(){
     if (f2.groups.length > 1) {
       var n = 0, tot = 0;
       g.files.forEach(function(x, i){ if (g.chk[i]) n++; tot += x.size; });
-      html += '<div class="h"><label><input type="checkbox" data-ga="' + gi + '"' + (n === g.files.length ? ' checked' : '') + '><b>' + E(g.title) + '</b> <span class="mut">(' + g.files.length + ' files, ' + sz(tot) + ')</span></label></div>';
+      html += '<div class="h"><label><input type="checkbox" data-ga="' + gi + '"' + (n === g.files.length ? ' checked' : '') + '><b>' + E(g.title) + '</b> <span class="mut">' + E(T('f2_group', g.files.length, sz(tot))) + '</span></label></div>';
     }
     var L = f2Layout(g);
     L.root.forEach(function(i){ html += row(g, gi, i, g.files[i].path, ''); });
     L.dirs.forEach(function(d){
       var on = 0, tot = 0;
       d.idx.forEach(function(i){ if (g.chk[i]) on++; tot += g.files[i].size; });
-      html += '<div class="dh"><label><input type="checkbox" data-gd="' + gi + '" data-dn="' + E(d.name) + '"' + (on === d.idx.length ? ' checked' : '') + (on > 0 && on < d.idx.length ? ' data-part="1"' : '') + '><b>' + E(d.name) + '/</b> <span class="mut">(' + d.idx.length + ' files, ' + sz(tot) + ')</span></label></div>';
+      html += '<div class="dh"><label><input type="checkbox" data-gd="' + gi + '" data-dn="' + E(d.name) + '"' + (on === d.idx.length ? ' checked' : '') + (on > 0 && on < d.idx.length ? ' data-part="1"' : '') + '><b>' + E(d.name) + '/</b> <span class="mut">' + E(T('f2_group', d.idx.length, sz(tot))) + '</span></label></div>';
       d.idx.forEach(function(i){ html += row(g, gi, i, g.files[i].path.substr(d.name.length + 1), 'in'); });
     });
   });
@@ -2266,8 +2420,8 @@ $('f2cancel').onclick = closeDialog;
 function openFiles2(groups, mode, extra){
   f2 = { mode: mode, groups: groups, hash: extra.hash || '', drive: extra.drive || '', start: extra.start, label: extra.label || '' };
   $('dlg').style.display = 'none';
-  $('f2title').textContent = mode === 'add' ? 'Select files to download' : 'Files: ' + (extra.title || '');
-  $('f2go').textContent = mode === 'add' ? 'Start download' : 'Apply';
+  $('f2title').textContent = mode === 'add' ? T('f2_title_add') : T('f2_title_edit', extra.title || '');
+  $('f2go').textContent = mode === 'add' ? T('f2_start') : T('f2_apply');
   $('f2back').style.display = mode === 'add' ? '' : 'none';
   renderFiles2();
   $('dlg2').style.display = 'flex';
@@ -2276,12 +2430,12 @@ function openFiles2(groups, mode, extra){
 // Файлы уже добавленной задачи (кнопка Files): список приходит от консоли
 function openTaskFiles(hash){
   api('/api/files?hash=' + hash).then(function(r){ return r.json(); }).then(function(d){
-    if (!d.ok) { say(d.error || 'failed', true); return; }
+    if (!d.ok) { say(d.error || T('failed'), true); return; }
     var paths = d.files.map(function(x){ return x.path; }), root = paths[0].indexOf('/') > 0 ? paths[0].split('/')[0] : '';
     var strip = root && paths.every(function(p){ return p.indexOf(root + '/') === 0; });
     openFiles2([{ title: d.title, files: d.files.map(function(x){ return { path: strip ? x.path.substr(root.length + 1) : x.path, size: x.size }; }), chk: d.files.map(function(x){ return !!x.sel; }) }],
                'edit', { hash: d.hash, title: d.title });
-  }).catch(function(){ say('No answer from the console', true); });
+  }).catch(function(){ say(T('noanswer'), true); });
 }
 
 $('f2go').onclick = function(){
@@ -2291,8 +2445,8 @@ $('f2go').onclick = function(){
     var txt = skipText(m.groups[0].chk);
     closeDialog();
     api('/api/select?hash=' + m.hash + '&skip=' + encodeURIComponent(txt)).then(function(r){ return r.json(); })
-      .then(function(d){ say(d.ok ? 'Files updated' : (d.error || 'failed'), !d.ok); setTimeout(function(){ load(true); }, 1500); })
-      .catch(function(){ say('No answer from the console', true); });
+      .then(function(d){ say(d.ok ? T('f2_updated') : (d.error || T('failed')), !d.ok); setTimeout(function(){ load(true); }, 1500); })
+      .catch(function(){ say(T('noanswer'), true); });
     return;
   }
   var files = m.groups.map(function(g){ return { name: g.src.name, data: g.src.data, skip: skipText(g.chk) }; });
@@ -2319,21 +2473,21 @@ $('dlg').onclick = function(e){ if (e.target === $('dlg')) closeDialog(); };
 
 function doUpload(files, drive, start, label){
   if (!files.length) return;
-  say('Adding ' + files.length + ' torrent(s) to ' + label + '...', false);
+  say(T('adding', files.length, label), false);
   var okN = 0, errs = [], dups = [], left = files.length;
   var fin = function(){
     if (--left > 0) return;
-    var dupTxt = dups.length ? 'Already in the list, not added again: ' + dups.join('; ') : '';
-    if (errs.length) say('Added ' + okN + ', failed ' + errs.length + ': ' + errs.join('; ') + (dupTxt ? '. ' + dupTxt : ''), true);
+    var dupTxt = dups.length ? T('add_dup', dups.join('; ')) : '';
+    if (errs.length) say(T('add_mixed', okN, errs.length, errs.join('; ')) + (dupTxt ? '. ' + dupTxt : ''), true);
     else if (okN === 0 && dupTxt) say(dupTxt, true);
-    else say('Added ' + okN + ' to ' + label + (start ? ' and started' : ' (not started: press resume)') + (dupTxt ? '. ' + dupTxt : ''), false);
+    else say(T('add_ok', okN, label) + (start ? T('add_started') : T('add_notstarted')) + (dupTxt ? '. ' + dupTxt : ''), false);
     load(true);
   };
   files.forEach(function(f){
     api('/api/add?name=' + encodeURIComponent(f.name) + '&drive=' + encodeURIComponent(drive) + '&start=' + start + (f.skip ? '&skip=' + encodeURIComponent(f.skip) : ''), { method: 'POST', body: f.data })
       .then(function(r){ return r.json(); })
       .then(function(d){ if (d.ok && d.duplicate) dups.push(d.title || f.name); else if (d.ok) okN++; else errs.push(f.name + ': ' + d.error); fin(); })
-      .catch(function(){ errs.push(f.name + ': upload failed'); fin(); });
+      .catch(function(){ errs.push(f.name + ': ' + T('upload_failed')); fin(); });
   });
 }
 
@@ -2361,16 +2515,27 @@ $('cfgb').onclick = function(){
   if (p.style.display === 'block') { p.style.display = 'none'; return; }
   api('/api/config').then(function(r){ return r.json(); }).then(function(c){
     $('mp').value = c.max_parallel; $('lp').value = c.listen_port; $('as').checked = !!c.autostart; $('rs').checked = c.resume_session !== false;
-    $('cfgi').textContent = 'version ' + c.version;
+    $('cfgi').textContent = T('cfg_version', c.version);
+    fillLangSelect();
     p.style.display = 'block';
   });
 };
 $('cfgs').onclick = function(){
   api('/api/set?max_parallel=' + encodeURIComponent($('mp').value) + '&listen_port=' + encodeURIComponent($('lp').value) + '&autostart=' + ($('as').checked ? 1 : 0) + '&resume_session=' + ($('rs').checked ? 1 : 0))
-    .then(function(r){ return r.json(); }).then(function(d){ say(d.ok ? 'Saved' : (d.error || 'failed'), !d.ok); setTimeout(load, 1500); });
+    .then(function(r){ return r.json(); }).then(function(d){ say(d.ok ? T('saved') : (d.error || T('failed')), !d.ok); setTimeout(load, 1500); });
+};
+$('lng').onchange = function(){
+  try { localStorage.setItem('lang', $('lng').value); } catch (e) {}
+  setLang(function(){ fillLangSelect(); lastHtml = ''; if (lastData) { paint(); } load(true); if ($('cfgi').textContent) $('cfgi').textContent = T('cfg_version', (lastData && lastData.version) || ''); });
 };
 
-load(); setInterval(function(){ load(); }, 2000);
+// Выключение программы: красная кнопка, с подтверждением (то же, что адрес /quit).
+$('quitb').onclick = function(){
+  if (!confirm(T('quit_confirm'))) return;
+  api('/quit').then(function(){ say(T('quit_done'), false); }).catch(function(){ say(T('quit_done'), false); });
+};
+
+initLang(function(){ load(); setInterval(function(){ load(); }, 2000); });
 </script></body></html>
 )HTMLPAGE";
 
@@ -2703,6 +2868,32 @@ static void handle_client(int c)
     if (path == "/favicon.ico") { respond_bytes(c, "image/x-icon", ps4_favicon_start, (size_t)(ps4_favicon_end - ps4_favicon_start)); return; }
     if (path == "/logo.png") { respond_bytes(c, "image/png", ps4_logo_start, (size_t)(ps4_logo_end - ps4_logo_start)); return; }
     if (path == "/notify.png") { respond_bytes(c, "image/png", ps4_notify_start, (size_t)(ps4_notify_end - ps4_notify_start)); return; }
+    // Файлы языков отдаём без пароля (в них только тексты интерфейса): /lang/index.json (список) и /lang/<код>.json.
+    if (path.compare(0, 6, "/lang/") == 0) {
+        std::string name = path.substr(6);
+        if (name == "index.json") {
+            std::string j = "[";
+            for (int k = 0; k < g_langCount; k++) {
+                std::string body((const char*)g_langFiles[k].start, (size_t)(g_langFiles[k].end - g_langFiles[k].start));
+                std::string nm = g_langFiles[k].code;
+                size_t p = body.find("\"_name\"");
+                if (p != std::string::npos) {
+                    size_t a = body.find('"', body.find(':', p) + 1), b = (a == std::string::npos) ? a : body.find('"', a + 1);
+                    if (b != std::string::npos && b - a < 60) nm = body.substr(a + 1, b - a - 1);
+                }
+                j += std::string(k ? "," : "") + "{\"code\":\"" + g_langFiles[k].code + "\",\"name\":\"" + nm + "\"}";
+            }
+            respond(c, "application/json; charset=utf-8", j + "]");
+            return;
+        }
+        for (int k = 0; k < g_langCount; k++)
+            if (name == std::string(g_langFiles[k].code) + ".json") {
+                respond_bytes(c, "application/json; charset=utf-8", g_langFiles[k].start, (size_t)(g_langFiles[k].end - g_langFiles[k].start));
+                return;
+            }
+        respond_status(c, 404, "Not Found", "text/plain", "not found\n");
+        return;
+    }
     if (!g_token.empty() && qget(query, "token") != g_token) {
         respond_json_error(c, 401, "Unauthorized", "access token required");
         return;
@@ -3174,6 +3365,7 @@ static size_t apply_commands(time_t now)
                 Item* o = g_items[k];
                 if (o->complete || o->paused == pause) continue;
                 o->paused = pause;
+                o->memPaused = false;
                 if (!pause) { o->failed = false; o->retryAt = 0; }
                 n++;
             }
@@ -3192,9 +3384,11 @@ static size_t apply_commands(time_t now)
 
         if (cmd == "pause") {
             it->paused = true;
+            it->memPaused = false;
             logf_("command: pause %s", it->title.c_str());
         } else if (cmd == "resume") {
             it->paused = false;
+            it->memPaused = false;
             it->failed = false;
             it->retryAt = 0;
             logf_("command: resume %s", it->title.c_str());
@@ -3691,6 +3885,7 @@ int main()
             if (lastScan == 0 || now - lastScan >= 10 || g_rescan) { g_rescan = false; lastScan = now; scan_usb(now); }
             PHASE("scan_usb");
 
+            memory_guard(now);
             run_downloads(now);
             PHASE("downloads");
             if (g_active.empty()) usleep(20000);
@@ -3728,8 +3923,8 @@ int main()
                 struct rusage ru;
                 long rss = 0;
                 if (getrusage(RUSAGE_SELF, &ru) == 0) rss = ru.ru_maxrss;
-                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, incoming: %u accepted %u rejected, piece buffers %u MB", (int)g_items.size(),
-                      (int)g_active.size(), sp, rss, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20));
+                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB", (int)g_items.size(),
+                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20));
             }
             #undef PHASE
         } catch (const std::bad_alloc&) {
@@ -3740,6 +3935,7 @@ int main()
             time_t tn = time(NULL);
             if (oomFirst == 0 || tn - oomFirst > 600) { oomFirst = tn; oomCount = 0; }
             oomCount++;
+            g_memEvent = true;
             logf_("!!! OUT OF MEMORY (std::bad_alloc) #%d: all peer connections are dropped to free memory, the program continues", oomCount);
             for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->sw) g_active[i]->sw->trim_memory();
             if (oomCount == 1) notify("ps4torrent: low memory, peer connections were reset");

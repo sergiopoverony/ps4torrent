@@ -18,7 +18,7 @@ const five = mk('Five Files', [['a.pkg', 1 * GB], ['b.pkg', 2 * GB], ['c.pkg', 3
 const second = mk('Second Pack', [['x.bin', 100], ['y.bin', 200]]);
 const junk = new Uint8Array([1, 2, 3]).buffer;
 
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
 Object.defineProperty(els.dsel, 'innerHTML', { get(){ return this._h || ''; }, set(v){ this._h = v; const re = /<option value="([^"]*)">([^<]*)<\/option>/g; let m; this.options = []; while ((m = re.exec(v))) this.options.push({ value: m[1], text: m[2].replace(/&quot;/g,'"').replace(/&amp;/g,'&') }); } });
 let status = { items: [
   { hash:'a'.repeat(40), title:'Pack One', status:'paused', size:5*GB, done:0, pct:0, speed_kb:0, eta_s:-1, peers:0, paused:true, low_space:false, nfiles:3, nskip:1, root:'/mnt/usb0/torrents' },
@@ -29,10 +29,13 @@ let status = { items: [
   speed_kb:0, listen_port:6881, incoming:0, deleting:0, version:'1.3.0.0' };
 const calls = [], bodies = [];
 const filesReply = { ok:true, hash:'a'.repeat(40), title:'Pack One', complete:false, files:[{ i:0, size:1*GB, sel:true, path:'Pack One/a.pkg' }, { i:1, size:2*GB, sel:false, path:'Pack One/dlc/b.pkg' }, { i:2, size:2*GB, sel:true, path:'Pack One/c.pkg' }] };
-const ctx = { document:{ getElementById:id=>els[id] }, location:{hash:''}, sessionStorage:{ getItem(){return null}, setItem(){} }, prompt:()=>'', confirm:()=>true,
+const ctx = { document:{ getElementById:id=>els[id], querySelectorAll:()=>[] }, localStorage:{ getItem(){return null}, setItem(){} }, navigator:{ language:'en', languages:['en'] }, location:{hash:''}, sessionStorage:{ getItem(){return null}, setItem(){} }, prompt:()=>'', confirm:()=>true,
   setTimeout:(f)=>{ f && f(); return 0; }, clearTimeout:()=>{}, setInterval:()=>0, Date:{ now:()=>1e6 }, encodeURIComponent, decodeURIComponent, Array, String, Math, Promise, Error, parseInt, TextDecoder, Uint8Array,
   FileReader: function(){ this.readAsArrayBuffer = function(f){ this.result = f.__buf; setImmediate(() => this.onload()); }; },
   fetch:(url, opts)=>{ calls.push(url); bodies.push(opts && opts.body);
+    if (url.startsWith('/lang/')) { const fsx = require('fs'), dir = '/tmp/daemon/ps4torrentd/assets/lang/'; const nm = url.slice(6);
+      const body = nm === 'index.json' ? fsx.readdirSync(dir).filter(x => x.endsWith('.json')).map(x => ({ code: x.slice(0, -5), name: JSON.parse(fsx.readFileSync(dir + x, 'utf8'))._name })) : JSON.parse(fsx.readFileSync(dir + nm, 'utf8'));
+      return Promise.resolve({ ok:true, status:200, json:()=>Promise.resolve(body) }); }
     const body = url.startsWith('/status') ? status : url.startsWith('/api/files') ? filesReply : { ok:true };
     return Promise.resolve({ status:200, json:()=>Promise.resolve(body) }); } };
 vm.createContext(ctx); vm.runInContext(script, ctx);
@@ -58,7 +61,7 @@ const lastAdd = () => calls.filter(c => c.startsWith('/api/add')).pop();
   ok(els.dlg.style.display === 'none' && els.dlg2.style.display === 'flex' && calls.filter(c => c.startsWith('/api/add')).length === 0, 'Next opens the file window and uploads nothing yet');
   ok(els.f2list.innerHTML.includes('a.pkg') && els.f2list.innerHTML.includes('>e.pkg<') && els.f2list.innerHTML.includes('sub/') && (els.f2list.innerHTML.match(/checked/g) || []).length === 6, 'all 5 files are listed (folder sub/ as a block with its own checkbox) and ALL are checked by default');
   ok(els.f2info.textContent === 'Selected: 5 of 5 files, 8.0 GB' && els.f2go.disabled === false, 'summary: ' + els.f2info.textContent);
-  ok(els.f2go.textContent === 'Start download' && html.includes('id="f2all">Select all<') && html.includes('id="f2none">Deselect all<') && html.includes('id="f2cancel" class="dng">Cancel<') && html.includes('id="f2go" class="go">Start download<') && html.includes('id="f2back">Back<'), 'the buttons are named as requested (Cancel red, Start download green, Back present)');
+  ok(els.f2go.textContent === 'Start download' && html.includes('id="f2all" data-i18n="f2_all">Select all<') && html.includes('id="f2none" data-i18n="f2_none">Deselect all<') && html.includes('id="f2cancel" class="dng" data-i18n="dlg_cancel">Cancel<') && html.includes('id="f2go" class="go">Start download<') && html.includes('id="f2back" data-i18n="f2_back">Back<'), 'the buttons are named as requested (Cancel red, Start download green, Back present)');
   // 3. снимаем файлы и запускаем
   chg(0, 1, false); chg(0, 2, false);
   ok(els.f2info.textContent === 'Selected: 3 of 5 files, 3.0 GB', 'unchecking updates the summary: ' + els.f2info.textContent);

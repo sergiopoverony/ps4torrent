@@ -2,7 +2,7 @@ const vm = require('vm'), fs = require('fs');
 const script = fs.readFileSync('/tmp/page/script.js', 'utf8');
 let fakeNow = 1000000, results = [];
 const ok = (c, m) => { results.push(c); console.log((c ? 'PASS ' : 'FAIL ') + m); };
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','nt','ni','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', files:[], querySelectorAll(){ return []; }, scrollTop:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','nt','ni','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', files:[], querySelectorAll(){ return []; }, scrollTop:0 });
 const writes = []; let curHtml = '';
 Object.defineProperty(els.m, 'innerHTML', { get(){ return curHtml; }, set(v){ writes.push(v); curHtml = v; } });
 const calls = []; let respondDelay = 0, failNext = false, resolvers = [];
@@ -13,10 +13,13 @@ let status = { items:[
   drives:[{root:'/mnt/usb0/torrents', free:27*GB, total:64*GB, kind:'usb', low:false}, {root:'/data/pkg/torrents', free:3*GB, total:100*GB, kind:'internal', low:true}],
   speed_kb:512, listen_port:6881, incoming:3, deleting:0, version:'1.0' };
 const ctx = {
-  document:{ getElementById:id=>els[id] }, location:{hash:''}, sessionStorage:{ _:{}, getItem(k){return this._[k]||null}, setItem(k,v){this._[k]=v} },
+  document:{ getElementById:id=>els[id], querySelectorAll:()=>[] }, localStorage:{ getItem(){return null}, setItem(){} }, navigator:{ language:'en', languages:['en'] }, location:{hash:''}, sessionStorage:{ _:{}, getItem(k){return this._[k]||null}, setItem(k,v){this._[k]=v} },
   prompt:()=>'', confirm:()=>true, setTimeout:(f,ms)=>0, clearTimeout:()=>{}, setInterval:()=>0, Date:{ now:()=>fakeNow },
   encodeURIComponent, decodeURIComponent, Array, String, Math, Promise, Error, FileReader: function(){},
   fetch:(url, opts)=>{ calls.push(url);
+    if (url.startsWith('/lang/')) { const fsx = require('fs'), dir = '/tmp/daemon/ps4torrentd/assets/lang/'; const nm = url.slice(6);
+      const body = nm === 'index.json' ? fsx.readdirSync(dir).filter(x => x.endsWith('.json')).map(x => ({ code: x.slice(0, -5), name: JSON.parse(fsx.readFileSync(dir + x, 'utf8'))._name })) : JSON.parse(fsx.readFileSync(dir + nm, 'utf8'));
+      return Promise.resolve({ ok:true, status:200, json:()=>Promise.resolve(body) }); }
     const body = url.startsWith('/status') ? status : url.startsWith('/api/config') ? {max_parallel:3,listen_port:6881,autostart:false,save_to:'internal',version:'1.0'} : {ok:true};
     if (failNext && url.startsWith('/api/pause')) { failNext = false; return Promise.reject(new Error('net')); }
     if (url.startsWith('/api/') && respondDelay) return new Promise(res => resolvers.push(() => res({status:200, json:()=>Promise.resolve(body)})));
