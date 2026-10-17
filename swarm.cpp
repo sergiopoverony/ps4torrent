@@ -42,7 +42,7 @@ static const int MAX_INFLIGHT = 24;                      // запросов в 
 // Защита по памяти: все буферы кусков всех раздач вместе (с очередью записи на диск) не должны превышать этот предел.
 // Новые куски сверх предела не открываются (кроме двух на раздачу, чтобы она не остановилась совсем).
 #ifndef MAX_BIGBUF_TOTAL
-#define MAX_BIGBUF_TOTAL (128u << 20)
+#define MAX_BIGBUF_TOTAL (96u << 20)
 #endif
 static const size_t MAX_ACTIVE_BYTES = SWARM_ACTIVE_BYTES;  // сколько кусков держим в памяти
 static const size_t SPARE_ACTIVE = 2;                    // запасные слоты для пиров, которые не могут помочь с текущими кусками
@@ -417,11 +417,13 @@ static bool on_message(Ctx& x, Conn& c, const unsigned char* m, uint32_t len) {
     return true;
 }
 
-static bool parse_input(Ctx& x, Conn& c) {
+// Разбор принятых данных прямо из переданного буфера. used: сколько байт разобрано (остальное, неполное сообщение, остаётся ждать).
+static bool parse_buf(Ctx& x, Conn& c, const unsigned char* d, size_t n, size_t& used) {
     size_t pos = 0;
+    used = 0;
     if (c.state == 1) {
-        if (c.in.size() < 68) return true;
-        const unsigned char* h = (const unsigned char*)c.in.data();
+        if (n < 68) return true;
+        const unsigned char* h = d;
         if (h[0] != 19 || memcmp(h + 1, "BitTorrent protocol", 19) != 0 ||
             memcmp(h + 28, x.t.infoHash, 20) != 0) {
             c.failWhy = "handshake rejected (not BitTorrent, wrong torrent or encrypted)";
@@ -439,17 +441,42 @@ static bool parse_input(Ctx& x, Conn& c) {
         c.out.append((const char*)interested, 5);
     }
     while (c.state == 2) {
-        if (c.in.size() - pos < 4) break;
-        const unsigned char* p = (const unsigned char*)c.in.data() + pos;
+        if (n - pos < 4) break;
+        const unsigned char* p = d + pos;
         uint32_t len = get32(p);
-        if (len > 2 * 1024 * 1024) { c.failWhy = "message too big"; return false; }
-        if (c.in.size() - pos - 4 < len) break;
-        if (!on_message(x, c, p + 4, len)) { c.failWhy = "protocol error"; return false; }
+        if (len > 2 * 1024 * 1024) { c.failWhy = "message too big"; used = pos; return false; }
+        if (n - pos - 4 < len) break;
+        if (!on_message(x, c, p + 4, len)) { c.failWhy = "protocol error"; used = pos; return false; }
         pos += 4 + len;
     }
-    if (pos) c.in.erase(0, pos);
-    if (c.in.capacity() > 98304 && c.in.size() < 32768) { std::string small(c.in); c.in.swap(small); }      // быстрый пир раздул буфер: возвращаем память
+    used = pos;
     return true;
+}
+
+// Приёмный буфер соединения хранит только неполный хвост сообщения. Раньше все принятые данные копировались в строку соединения,
+// и она раздувалась до ~100 КБ на каждое из 80-90 соединений (8-20 МБ при куче ~10 МБ): отсюда сбои памяти.
+static void in_shrink(Conn& c) {
+    if (c.in.capacity() > 20000 && c.in.size() < c.in.capacity() / 4) { std::string small(c.in); c.in.swap(small); }
+}
+
+static bool parse_input(Ctx& x, Conn& c) {        // разбор того, что уже лежит в c.in (например, начало данных от входящего пира)
+    size_t used = 0;
+    bool ok = parse_buf(x, c, (const unsigned char*)c.in.data(), c.in.size(), used);
+    if (used) c.in.erase(0, used);
+    in_shrink(c);
+    return ok;
+}
+
+static bool feed(Ctx& x, Conn& c, const unsigned char* d, size_t n) {
+    size_t used = 0;
+    if (c.in.empty()) {
+        bool ok = parse_buf(x, c, d, n, used);
+        if (!ok) return false;
+        if (used < n) c.in.assign((const char*)d + used, n - used);
+        return true;
+    }
+    c.in.append((const char*)d, n);
+    return parse_input(x, c);
 }
 
 static bool do_read(Ctx& x, Conn& c) {
@@ -457,8 +484,8 @@ static bool do_read(Ctx& x, Conn& c) {
     for (int k = 0; k < 4; k++) {
         int r = recv(c.fd, rbuf, sizeof(rbuf), 0);
         if (r > 0) {
-            c.in.append((const char*)rbuf, (size_t)r);
             c.lastRecv = time(NULL);
+            if (!feed(x, c, rbuf, (size_t)r)) return false;
             if (r < (int)sizeof(rbuf)) break;
         } else if (r == 0) {
             c.failWhy = "closed by peer";
@@ -471,7 +498,7 @@ static bool do_read(Ctx& x, Conn& c) {
             return false;
         }
     }
-    return parse_input(x, c);
+    return true;
 }
 
 // Бросает кусок: освобождает память и снимает его запросы у всех соединений.

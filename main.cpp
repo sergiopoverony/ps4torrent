@@ -71,7 +71,32 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.13"
+#define APP_VERSION "1.4.1.14"
+
+// Сколько байт сейчас занято в обычной куче (new/delete): выводится в строке alive, чтобы по журналу видеть, растёт ли куча (утечка) или нет.
+static std::atomic<long> g_heapBytes(0), g_heapPeak(0);
+#ifndef HOST_TEST        // в тестах на компьютере (с санитайзерами) подмена new/delete не нужна
+#include <malloc_np.h>
+static void* heap_new(size_t n) {
+    void* p = malloc(n ? n : 1);
+    if (!p) throw std::bad_alloc();
+    long u = (long)malloc_usable_size(p);
+    long now = g_heapBytes.fetch_add(u) + u;
+    if (now > g_heapPeak.load(std::memory_order_relaxed)) g_heapPeak.store(now, std::memory_order_relaxed);
+    return p;
+}
+static void heap_del(void* p) noexcept {
+    if (!p) return;
+    g_heapBytes.fetch_sub((long)malloc_usable_size(p));
+    free(p);
+}
+void* operator new(size_t n) { return heap_new(n); }
+void* operator new[](size_t n) { return heap_new(n); }
+void operator delete(void* p) noexcept { heap_del(p); }
+void operator delete[](void* p) noexcept { heap_del(p); }
+void operator delete(void* p, size_t) noexcept { heap_del(p); }
+void operator delete[](void* p, size_t) noexcept { heap_del(p); }
+#endif
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -398,7 +423,7 @@ static std::vector<Item*> g_items;
 static std::map<std::string, time_t> g_bad;     // .torrent, которые не удалось прочитать (путь -> mtime)
 static unsigned char g_peerId[20];
 static const int MAX_PARALLEL_LIMIT = 25;          // верхний предел одновременных закачек (по умолчанию 3)
-static const int CONN_BUDGET = 60;                  // всего исходящих соединений на все закачки вместе (было 90: по журналу сбои памяти начинались при 76-87 соединениях)
+static const int CONN_BUDGET = 90;                  // всего исходящих соединений на все закачки вместе (было 90: по журналу сбои памяти начинались при 76-87 соединениях)
 static int g_connsTotal = 0;                        // сколько соединений с пирами открыто сейчас (для строки "alive" в журнале)
 static int g_maxParallel = 3;
 static int g_listenPort = LISTEN_PORT;       // 0 = входящие соединения выключены
@@ -4009,8 +4034,8 @@ int main()
                 struct rusage ru;
                 long rss = 0;
                 if (getrusage(RUSAGE_SELF, &ru) == 0) rss = ru.ru_maxrss;
-                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB, peer connections %d", (int)g_items.size(),
-                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20), g_connsTotal);
+                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB, peer connections %d, heap now %ld KB peak %ld KB", (int)g_items.size(),
+                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20), g_connsTotal, g_heapBytes.load() >> 10, g_heapPeak.load() >> 10);
             }
             #undef PHASE
         } catch (const std::bad_alloc&) {
