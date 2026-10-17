@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.12"
+#define APP_VERSION "1.4.1.13"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -398,7 +398,8 @@ static std::vector<Item*> g_items;
 static std::map<std::string, time_t> g_bad;     // .torrent, которые не удалось прочитать (путь -> mtime)
 static unsigned char g_peerId[20];
 static const int MAX_PARALLEL_LIMIT = 25;          // верхний предел одновременных закачек (по умолчанию 3)
-static const int CONN_BUDGET = 90;                  // всего исходящих соединений на все закачки вместе
+static const int CONN_BUDGET = 60;                  // всего исходящих соединений на все закачки вместе (было 90: по журналу сбои памяти начинались при 76-87 соединениях)
+static int g_connsTotal = 0;                        // сколько соединений с пирами открыто сейчас (для строки "alive" в журнале)
 static int g_maxParallel = 3;
 static int g_listenPort = LISTEN_PORT;       // 0 = входящие соединения выключены
 static std::atomic<bool> g_autostart(AUTOSTART_DEFAULT != 0);   // запускать ли раздачи сразу (по умолчанию нет)
@@ -1162,12 +1163,14 @@ static void run_downloads(time_t now)
     // 4. Обработка: загрузки получают данные, проверки делают очередную порцию.
     uint64_t deadline = now_us() + CHECK_WORK_US;
     std::vector<Job*> ending;
+    int connsSum = 0;
     for (size_t i = 0; i < g_active.size(); i++) {
         Job* j = g_active[i];
         Item& it = *j->it;
         if (j->sw) {
             j->sw->process(now, rf, wf);
             SwarmStatus st = j->sw->status();
+            connsSum += st.peers;
             it.have = st.haveCount;
             it.peers = st.sending;          // на экране только те пиры, которые реально присылают данные
             it.speedKB = st.speedKB;
@@ -1211,6 +1214,7 @@ static void run_downloads(time_t now)
             ending.push_back(j);
         }
     }
+    g_connsTotal = connsSum;
     for (size_t i = 0; i < ending.size(); i++) close_job(ending[i], now, false);
 }
 
@@ -4005,8 +4009,8 @@ int main()
                 struct rusage ru;
                 long rss = 0;
                 if (getrusage(RUSAGE_SELF, &ru) == 0) rss = ru.ru_maxrss;
-                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB", (int)g_items.size(),
-                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20));
+                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB, peer connections %d", (int)g_items.size(),
+                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20), g_connsTotal);
             }
             #undef PHASE
         } catch (const std::bad_alloc&) {
