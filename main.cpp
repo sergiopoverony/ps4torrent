@@ -71,7 +71,7 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.11"
+#define APP_VERSION "1.4.1.12"
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -995,10 +995,13 @@ static int adopt_incoming(const unsigned char infoHash[20], int fd, const std::s
 #define MEM_PAUSE_GAP_S 20     // после паузы ждём столько секунд, прежде чем ставить на паузу ещё одну
 #endif
 #ifndef MEM_RESUME_GAP_S
-#define MEM_RESUME_GAP_S 45    // между возвратами двух загрузок не меньше стольких секунд
+#define MEM_RESUME_GAP_S 120   // между возвратами двух загрузок не меньше стольких секунд
 #endif
 #ifndef MEM_EVENT_HOLD_S
-#define MEM_EVENT_HOLD_S 120   // после bad_alloc ничего не возвращаем столько секунд
+#define MEM_EVENT_HOLD_S 900   // после bad_alloc ничего не возвращаем столько секунд (раньше 120: возврат сразу вызывал новый сбой)
+#endif
+#ifndef MEM_PAUSE_BATCH
+#define MEM_PAUSE_BATCH 3      // за один раз ставим на паузу столько загрузок (самые малоскаченные)
 #endif
 #ifndef MEM_RESUME_AFTER_S
 #define MEM_RESUME_AFTER_S 90  // память должна быть в порядке столько секунд подряд, чтобы вернуть одну загрузку
@@ -1042,29 +1045,39 @@ static void memory_guard(time_t now)
     if (pressure) {
         g_memOkSince = 0;
         if (now - g_memLastPause < MEM_PAUSE_GAP_S) return;
-        Job* weak = NULL;
-        for (size_t i = 0; i < g_active.size(); i++) {
-            Job* j = g_active[i];
-            if (!j->it->running || j->it->paused || j->it->offline) continue;
-            if (!weak || j->it->speedKB < weak->it->speedKB || (j->it->speedKB == weak->it->speedKB && j->it->have < weak->it->have)) weak = j;
-        }
-        if (!weak) return;
         // Нехватка памяти внутри самой программы (bad_alloc): соединения уже сброшены, и последнюю загрузку из-за этого не останавливаем
         // (пауза нужна, когда памяти мало у консоли в целом).
         bool lowFree = f >= 0 && f < low && g_memPeak - f >= drop;
-        if (!lowFree && ev) {
-            int nrun = 0;
-            for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->it->running && !g_active[i]->it->paused && !g_active[i]->it->offline) nrun++;
-            if (nrun < 2) return;
+        int nrun = 0;
+        for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->it->running && !g_active[i]->it->paused && !g_active[i]->it->offline) nrun++;
+        int limit = MEM_PAUSE_BATCH;
+        if (!lowFree && ev) { if (nrun < 2) return; if (limit > nrun - 1) limit = nrun - 1; }
+        int done = 0;
+        std::string names;
+        while (done < limit) {
+            // самая малоскачанная (в процентах от всей раздачи); при равенстве — самая медленная
+            Job* weak = NULL;
+            for (size_t i = 0; i < g_active.size(); i++) {
+                Job* j = g_active[i];
+                if (!j->it->running || j->it->paused || j->it->offline) continue;
+                if (!weak) { weak = j; continue; }
+                uint64_t a1 = (uint64_t)j->it->have * 100000 / (j->it->t.numPieces ? j->it->t.numPieces : 1);
+                uint64_t a2 = (uint64_t)weak->it->have * 100000 / (weak->it->t.numPieces ? weak->it->t.numPieces : 1);
+                if (a1 < a2 || (a1 == a2 && j->it->speedKB < weak->it->speedKB)) weak = j;
+            }
+            if (!weak) break;
+            Item* it = weak->it;
+            it->paused = true;
+            it->memPaused = true;
+            g_memStack.push_back(it->t.infoHashHex);
+            logf_("low memory (free %lld MB, recent maximum %lld MB%s): %s paused automatically (%u of %u pieces, %d KB/s); it resumes when memory is free again",
+                  f < 0 ? -1LL : f >> 20, g_memPeak >> 20, ev ? ", out of memory in the main loop" : "", it->title.c_str(), (unsigned)it->have, (unsigned)it->t.numPieces, it->speedKB);
+            if (done == 0) names = it->title;
+            done++;
         }
-        Item* it = weak->it;
-        it->paused = true;
-        it->memPaused = true;
-        g_memStack.push_back(it->t.infoHashHex);
+        if (done == 0) return;
         g_memLastPause = now;
-        logf_("low memory (free %lld MB, recent maximum %lld MB%s): %s paused automatically (%d KB/s); it resumes when memory is free again",
-              f < 0 ? -1LL : f >> 20, g_memPeak >> 20, ev ? ", out of memory in the main loop" : "", it->title.c_str(), it->speedKB);
-        notify("ps4torrent: low memory, download paused: %s", it->title.c_str());
+        notify("ps4torrent: low memory, %d download(s) paused: %s%s", done, cut_utf8(names, 80).c_str(), done > 1 ? ", ..." : "");
         return;
     }
     if (g_memStack.empty()) { g_memOkSince = 0; return; }

@@ -169,7 +169,8 @@ static void conn_close(Ctx& x, Conn& c, const char* why) {
               (unsigned long long)(c.bytes / 1024));
     close(c.fd);
     c.fd = -1;
-    x.failedAt[c.key] = time(NULL);
+    // Пиры, сброшенные из-за нехватки памяти, ни в чём не виноваты: пробуем их снова уже через ~20 с, а не через 120
+    x.failedAt[c.key] = time(NULL) - (strcmp(why, "out of memory") == 0 ? 100 : 0);
 }
 
 static bool flush_out(Conn& c) {
