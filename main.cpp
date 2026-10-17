@@ -71,7 +71,32 @@
 #endif
 // Версия программы. Правило: при каждой правке и пересборке увеличивать последнюю цифру (1.2.0.0 -> 1.2.0.1 -> ...);
 // при крупных изменениях менять и старшие. Версия видна внизу страницы, в /status, в /api/config и в начале лога.
-#define APP_VERSION "1.4.1.11"
+#define APP_VERSION "1.4.1.14"
+
+// Сколько байт сейчас занято в обычной куче (new/delete): выводится в строке alive, чтобы по журналу видеть, растёт ли куча (утечка) или нет.
+static std::atomic<long> g_heapBytes(0), g_heapPeak(0);
+#ifndef HOST_TEST        // в тестах на компьютере (с санитайзерами) подмена new/delete не нужна
+#include <malloc_np.h>
+static void* heap_new(size_t n) {
+    void* p = malloc(n ? n : 1);
+    if (!p) throw std::bad_alloc();
+    long u = (long)malloc_usable_size(p);
+    long now = g_heapBytes.fetch_add(u) + u;
+    if (now > g_heapPeak.load(std::memory_order_relaxed)) g_heapPeak.store(now, std::memory_order_relaxed);
+    return p;
+}
+static void heap_del(void* p) noexcept {
+    if (!p) return;
+    g_heapBytes.fetch_sub((long)malloc_usable_size(p));
+    free(p);
+}
+void* operator new(size_t n) { return heap_new(n); }
+void* operator new[](size_t n) { return heap_new(n); }
+void operator delete(void* p) noexcept { heap_del(p); }
+void operator delete[](void* p) noexcept { heap_del(p); }
+void operator delete(void* p, size_t) noexcept { heap_del(p); }
+void operator delete[](void* p, size_t) noexcept { heap_del(p); }
+#endif
 
 #ifndef WRITE_FLUSH_BUDGET_MS
 #define WRITE_FLUSH_BUDGET_MS 300     // сколько ждать дозаписи проверенных кусков при остановке (остальное допишется в фоне)
@@ -398,7 +423,8 @@ static std::vector<Item*> g_items;
 static std::map<std::string, time_t> g_bad;     // .torrent, которые не удалось прочитать (путь -> mtime)
 static unsigned char g_peerId[20];
 static const int MAX_PARALLEL_LIMIT = 25;          // верхний предел одновременных закачек (по умолчанию 3)
-static const int CONN_BUDGET = 90;                  // всего исходящих соединений на все закачки вместе
+static const int CONN_BUDGET = 90;                  // всего исходящих соединений на все закачки вместе (было 90: по журналу сбои памяти начинались при 76-87 соединениях)
+static int g_connsTotal = 0;                        // сколько соединений с пирами открыто сейчас (для строки "alive" в журнале)
 static int g_maxParallel = 3;
 static int g_listenPort = LISTEN_PORT;       // 0 = входящие соединения выключены
 static std::atomic<bool> g_autostart(AUTOSTART_DEFAULT != 0);   // запускать ли раздачи сразу (по умолчанию нет)
@@ -995,10 +1021,13 @@ static int adopt_incoming(const unsigned char infoHash[20], int fd, const std::s
 #define MEM_PAUSE_GAP_S 20     // после паузы ждём столько секунд, прежде чем ставить на паузу ещё одну
 #endif
 #ifndef MEM_RESUME_GAP_S
-#define MEM_RESUME_GAP_S 45    // между возвратами двух загрузок не меньше стольких секунд
+#define MEM_RESUME_GAP_S 120   // между возвратами двух загрузок не меньше стольких секунд
 #endif
 #ifndef MEM_EVENT_HOLD_S
-#define MEM_EVENT_HOLD_S 120   // после bad_alloc ничего не возвращаем столько секунд
+#define MEM_EVENT_HOLD_S 900   // после bad_alloc ничего не возвращаем столько секунд (раньше 120: возврат сразу вызывал новый сбой)
+#endif
+#ifndef MEM_PAUSE_BATCH
+#define MEM_PAUSE_BATCH 3      // за один раз ставим на паузу столько загрузок (самые малоскаченные)
 #endif
 #ifndef MEM_RESUME_AFTER_S
 #define MEM_RESUME_AFTER_S 90  // память должна быть в порядке столько секунд подряд, чтобы вернуть одну загрузку
@@ -1042,29 +1071,39 @@ static void memory_guard(time_t now)
     if (pressure) {
         g_memOkSince = 0;
         if (now - g_memLastPause < MEM_PAUSE_GAP_S) return;
-        Job* weak = NULL;
-        for (size_t i = 0; i < g_active.size(); i++) {
-            Job* j = g_active[i];
-            if (!j->it->running || j->it->paused || j->it->offline) continue;
-            if (!weak || j->it->speedKB < weak->it->speedKB || (j->it->speedKB == weak->it->speedKB && j->it->have < weak->it->have)) weak = j;
-        }
-        if (!weak) return;
         // Нехватка памяти внутри самой программы (bad_alloc): соединения уже сброшены, и последнюю загрузку из-за этого не останавливаем
         // (пауза нужна, когда памяти мало у консоли в целом).
         bool lowFree = f >= 0 && f < low && g_memPeak - f >= drop;
-        if (!lowFree && ev) {
-            int nrun = 0;
-            for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->it->running && !g_active[i]->it->paused && !g_active[i]->it->offline) nrun++;
-            if (nrun < 2) return;
+        int nrun = 0;
+        for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->it->running && !g_active[i]->it->paused && !g_active[i]->it->offline) nrun++;
+        int limit = MEM_PAUSE_BATCH;
+        if (!lowFree && ev) { if (nrun < 2) return; if (limit > nrun - 1) limit = nrun - 1; }
+        int done = 0;
+        std::string names;
+        while (done < limit) {
+            // самая малоскачанная (в процентах от всей раздачи); при равенстве — самая медленная
+            Job* weak = NULL;
+            for (size_t i = 0; i < g_active.size(); i++) {
+                Job* j = g_active[i];
+                if (!j->it->running || j->it->paused || j->it->offline) continue;
+                if (!weak) { weak = j; continue; }
+                uint64_t a1 = (uint64_t)j->it->have * 100000 / (j->it->t.numPieces ? j->it->t.numPieces : 1);
+                uint64_t a2 = (uint64_t)weak->it->have * 100000 / (weak->it->t.numPieces ? weak->it->t.numPieces : 1);
+                if (a1 < a2 || (a1 == a2 && j->it->speedKB < weak->it->speedKB)) weak = j;
+            }
+            if (!weak) break;
+            Item* it = weak->it;
+            it->paused = true;
+            it->memPaused = true;
+            g_memStack.push_back(it->t.infoHashHex);
+            logf_("low memory (free %lld MB, recent maximum %lld MB%s): %s paused automatically (%u of %u pieces, %d KB/s); it resumes when memory is free again",
+                  f < 0 ? -1LL : f >> 20, g_memPeak >> 20, ev ? ", out of memory in the main loop" : "", it->title.c_str(), (unsigned)it->have, (unsigned)it->t.numPieces, it->speedKB);
+            if (done == 0) names = it->title;
+            done++;
         }
-        Item* it = weak->it;
-        it->paused = true;
-        it->memPaused = true;
-        g_memStack.push_back(it->t.infoHashHex);
+        if (done == 0) return;
         g_memLastPause = now;
-        logf_("low memory (free %lld MB, recent maximum %lld MB%s): %s paused automatically (%d KB/s); it resumes when memory is free again",
-              f < 0 ? -1LL : f >> 20, g_memPeak >> 20, ev ? ", out of memory in the main loop" : "", it->title.c_str(), it->speedKB);
-        notify("ps4torrent: low memory, download paused: %s", it->title.c_str());
+        notify("ps4torrent: low memory, %d download(s) paused: %s%s", done, cut_utf8(names, 80).c_str(), done > 1 ? ", ..." : "");
         return;
     }
     if (g_memStack.empty()) { g_memOkSince = 0; return; }
@@ -1149,12 +1188,14 @@ static void run_downloads(time_t now)
     // 4. Обработка: загрузки получают данные, проверки делают очередную порцию.
     uint64_t deadline = now_us() + CHECK_WORK_US;
     std::vector<Job*> ending;
+    int connsSum = 0;
     for (size_t i = 0; i < g_active.size(); i++) {
         Job* j = g_active[i];
         Item& it = *j->it;
         if (j->sw) {
             j->sw->process(now, rf, wf);
             SwarmStatus st = j->sw->status();
+            connsSum += st.peers;
             it.have = st.haveCount;
             it.peers = st.sending;          // на экране только те пиры, которые реально присылают данные
             it.speedKB = st.speedKB;
@@ -1198,6 +1239,7 @@ static void run_downloads(time_t now)
             ending.push_back(j);
         }
     }
+    g_connsTotal = connsSum;
     for (size_t i = 0; i < ending.size(); i++) close_job(ending[i], now, false);
 }
 
@@ -3992,8 +4034,8 @@ int main()
                 struct rusage ru;
                 long rss = 0;
                 if (getrusage(RUSAGE_SELF, &ru) == 0) rss = ru.ru_maxrss;
-                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB", (int)g_items.size(),
-                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20));
+                logf_("alive: %d torrents, %d active, %d KB/s, peak memory %ld KB, console free memory %lld MB (recent max %lld MB), incoming: %u accepted %u rejected, piece buffers %u MB, peer connections %d, heap now %ld KB peak %ld KB", (int)g_items.size(),
+                      (int)g_active.size(), sp, rss, g_memFree < 0 ? -1LL : g_memFree >> 20, g_memPeak >> 20, incoming_accepted(), incoming_rejected(), (unsigned)(bigbuf_total().load() >> 20), g_connsTotal, g_heapBytes.load() >> 10, g_heapPeak.load() >> 10);
             }
             #undef PHASE
         } catch (const std::bad_alloc&) {
