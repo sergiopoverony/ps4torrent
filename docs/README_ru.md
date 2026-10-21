@@ -20,6 +20,21 @@
     make
     make send PS4_HOST=192.168.0.24        # порт по умолчанию 9090 (BinLoader GoldHEN)
 
+## Приложение PKG (версия 1.8.0.2)
+
+В папке `pkg/` лежит приложение для PS4 (экран и геймпад), оно показывает раздачи и само ставит службу.
+Версия приложения и службы одна (`version.h`). При запуске приложение проверяет службу:
+если её нет или версия другая, оно записывает её в `/data/payloads/ps4torrentd.elf`, добавляет в автозапуск
+(`/data/GoldHEN/payloads.ini`, раздел `[AutoRun]`) и отправляет в BinLoader (порт 9090). Если BinLoader выключен,
+на экране будет подсказка: GoldHEN - Servers settings - Enable Payloader Server. Крест повторяет запуск.
+
+Сборка PKG (нужны OpenOrbis и ps4-payload-sdk):
+
+    export PS4_PAYLOAD_SDK=/opt/ps4-payload-sdk
+    export OO_PS4_TOOLCHAIN=/путь/к/OpenOrbis/PS4Toolchain
+    cd pkg
+    make full
+
 ## Сборка и прошивки
 
 * Программа собирается на **`ps4-payload-dev/sdk`** (`https://github.com/ps4-payload-dev/sdk`, ветка `master`, коммит `573b4a0` и новее).

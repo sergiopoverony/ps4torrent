@@ -2,3 +2,13 @@
 *.tmp
 blob_info.h
 /ps4torrentd.elf
+# PKG (pkg/): всё, что создаёт сборка
+pkg/build/
+pkg/sce_sys/
+pkg/sce_module/
+pkg/pkg.gp4
+pkg/eboot.bin
+pkg/*.pkg
+pkg/assets/misc/ps4torrentd.elf
+lang_gen.S
+lang_gen.cpp

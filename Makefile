@@ -2,6 +2,11 @@
 PS4_HOST ?= 192.168.0.24
 PS4_PORT ?= 9090
 
+# Путь к SDK по умолчанию; export нужен обязательно: скрипт orbis-ld читает PS4_PAYLOAD_SDK из окружения,
+# и без экспорта линковка падает ("cannot find linker script /ldscripts/elf_x86_64.x").
+PS4_PAYLOAD_SDK ?= /opt/ps4-payload-sdk
+export PS4_PAYLOAD_SDK
+
 ifdef PS4_PAYLOAD_SDK
     include $(PS4_PAYLOAD_SDK)/toolchain/orbis.mk
 else
