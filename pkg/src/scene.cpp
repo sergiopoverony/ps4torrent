@@ -25,7 +25,7 @@ bool Scene2D::Init(size_t memSize, int numFrameBuffers)
     }
 
     // Загружаем и инициализируем FreeType
-    rc = sceSysmoduleLoadModule(0x009A);
+    rc = sceSysmoduleLoadModule((OrbisSysModule)0x009A);
     if (rc < 0) {
         logf_("ui: cannot load freetype module: 0x%x", rc);
         return false;
