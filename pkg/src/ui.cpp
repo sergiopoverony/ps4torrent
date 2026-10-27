@@ -525,9 +525,12 @@ static void draw_quit_modal()
                     y0 + H - 36, C_AMBER, C_PANEL);
 }
 
+static void draw_files();
+
 static void draw_modal()
 {
     if (g_modal == MODAL_QUIT) { draw_quit_modal(); return; }
+    if (g_modal == MODAL_FILES) { draw_files(); return; }
     if (g_modal != MODAL_DELETE) return;
 
     const int W = 1200, H = 300;
@@ -648,7 +651,6 @@ static void set_font_px(int px)
     }
 }
 
-static int fl_visible() { return (FOOTER_Y - 10 - ROWS_Y) / ROW_H; }
 
 static bool fl_has_new()
 {
@@ -705,71 +707,110 @@ static std::string fl_skip_text()
     return out;
 }
 
+// Окно со списком файлов поверх главного экрана (как всплывающее окно на веб-странице).
+// Размеры окна и строк в пикселях; таблица внутри рисуется мелким шрифтом FONT_FILES_PX.
+static const int FLW_W = 1500, FLW_HMAX = 860;              // окно сжимается по числу строк, но не выше FLW_HMAX
+static const int FLW_X = (FRAME_WIDTH - FLW_W) / 2;
+static const int FLW_PAD = 26;                                // отступ таблицы от краёв окна
+static const int FLW_TOP = 104;                               // от верха окна до шапки таблицы (заголовок, счётчик)
+static const int FLW_ROW_H = 34;
+static const int FLW_BOTTOM = 96;                             // под строками: сообщение и подсказки
+static const int FLW_MAXROWS = (FLW_HMAX - FLW_TOP - FLW_ROW_H - 4 - FLW_BOTTOM) / FLW_ROW_H;
+static const Color C_FLROW2 = { 46, 50, 63 };                 // чередование строк на фоне окна
+static const Color C_FLHEAD = { 58, 64, 80 };
+
+static int fl_visible_rows() { return FLW_MAXROWS; }
+
+// Текст, прижатый правым краем к пикселю right
+static void put_right_px(int right, const std::string& s, int maxChars, int baseline, Color fg, Color bg)
+{
+    std::string t = fit(s, maxChars);
+    draw_text(t, right - count_cp(t) * g_cellW, baseline, fg, bg);
+}
+
 static void draw_files()
 {
-    g_scene->FillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, C_BG);
+    int shown = (int)g_flRows.size();
+    if (shown > FLW_MAXROWS) shown = FLW_MAXROWS;
+    if (shown < 4) shown = 4;
+    const int FLW_H = FLW_TOP + FLW_ROW_H + 4 + shown * FLW_ROW_H + FLW_BOTTOM;
+    const int FLW_Y = (FRAME_HEIGHT - FLW_H) / 2;
+    const int FLW_HEAD_Y = FLW_Y + FLW_TOP;
+    const int FLW_ROWS_Y = FLW_HEAD_Y + FLW_ROW_H + 4;
+    draw_panel(FLW_W, FLW_H);
     const int cx = FRAME_WIDTH / 2;
-    put_center(cx, fit(tr("tc_files_title", "Files") + ": " + g_fl.title, (FRAME_WIDTH - 2 * MARGIN_X) / g_cellW), BANNER_TOP + 34, C_TEXT, C_BG);
+    const int innerChars = (FLW_W - 2 * FLW_PAD) / g_cellW;
+    put_center(cx, fit(tr("tc_files_title", "Files") + ": " + g_fl.title, innerChars), FLW_Y + 46, C_TEXT, C_PANEL);
 
     int on = 0;
     uint64_t onBytes = 0;
     for (size_t i = 0; i < g_flChk.size(); i++) if (g_flChk[i]) { on++; onBytes += g_fl.files[i].size; }
     char cnt[96];
     snprintf(cnt, sizeof(cnt), "%d / %d  %s", on, (int)g_flChk.size(), fmt_size(onBytes).c_str());
-    put_center(cx, tr("tc_files_selected", "selected") + ": " + cnt, BANNER_TOP + 70, C_DIM, C_BG);
+    put_center(cx, tr("tc_files_selected", "selected") + ": " + cnt, FLW_Y + 84, C_DIM, C_PANEL);
 
-    // Шапка и строки таблицы рисуем мелким шрифтом; правый край колонки размера остаётся там же, где был
+    // Таблица: мелкий шрифт. Колонки в пикселях от краёв окна.
     const int bigCell = g_cellW;
     set_font_px(FONT_FILES_PX);
-    const int colSize = ((COL_SPEED + W_SPEED) * bigCell) / g_cellW - W_SPEED;
-    g_scene->FillRect(0, HEADER_Y, FRAME_WIDTH, ROW_H, C_HEAD);
-    int hb = HEADER_Y + 25;
-    put_right(COL_NUM, W_NUM, "#", hb, C_DIM, C_HEAD);
-    put_left(COL_NAME, tr("tc_files_hdr_name", "File"), hb, C_DIM, C_HEAD);
-    put_right(colSize, W_SPEED, tr("tc_hdr_size", "Size"), hb, C_DIM, C_HEAD);
+    const int xL = FLW_X + FLW_PAD, xR = FLW_X + FLW_W - FLW_PAD;
+    const int xNumR = xL + 4 * g_cellW;                      // номер (по правому краю)
+    const int xChk = xNumR + 2 * g_cellW;                    // [x]
+    const int xName = xChk + 4 * g_cellW;                    // имя
+    const int wSize = 11;                                    // символов под размер
+    const int wName = (xR - wSize * g_cellW - xName) / g_cellW - 2;
 
-    const int vis = fl_visible();
-    const int wName = colSize - COL_NAME - 5;
+    g_scene->FillRect(FLW_X, FLW_HEAD_Y, FLW_W, FLW_ROW_H, C_FLHEAD);
+    int hb = FLW_HEAD_Y + 24;
+    put_right_px(xNumR, "#", 4, hb, C_DIM, C_FLHEAD);
+    draw_text(tr("tc_files_hdr_name", "File"), xChk, hb, C_DIM, C_FLHEAD);
+    put_right_px(xR, tr("tc_hdr_size", "Size"), wSize, hb, C_DIM, C_FLHEAD);
+
+    const int vis = fl_visible_rows();
     for (int v = 0; v < vis; v++) {
         int ri = g_flTop + v;
         if (ri >= (int)g_flRows.size()) break;
         const FlRow& row = g_flRows[ri];
-        bool selected = (ri == g_flSel);
-        int top = ROWS_Y + v * ROW_H;
-        Color bg = selected ? C_SEL : ((ri % 2) ? C_ROW2 : C_BG);
-        g_scene->FillRect(0, top, FRAME_WIDTH, ROW_H, bg);
-        int base = top + 25;
+        int top = FLW_ROWS_Y + v * FLW_ROW_H;
+        Color bg = (ri == g_flSel) ? C_SEL : ((ri % 2) ? C_FLROW2 : C_PANEL);
+        g_scene->FillRect(FLW_X, top, FLW_W, FLW_ROW_H, bg);
+        int base = top + 24;
         if (row.idx < 0) {                                   // заголовок папки
             int st = fl_dir_state(row);
             Color fg = fl_row_locked(ri) ? C_GREEN : (st ? C_AMBER : C_DIM);
             char cntb[48];
             snprintf(cntb, sizeof(cntb), "  (%d)", (int)row.members.size());
-            put_left(COL_NAME, st == 2 ? "[x]" : (st == 1 ? "[-]" : "[ ]"), base, fg, bg);
-            put_left(COL_NAME + 4, fit(row.text + cntb, wName), base, fg, bg);
-            put_right(colSize, W_SPEED, fmt_size(row.size), base, fg, bg);
+            draw_text(st == 2 ? "[x]" : (st == 1 ? "[-]" : "[ ]"), xChk, base, fg, bg);
+            draw_text(fit(row.text + cntb, wName), xName, base, fg, bg);
+            put_right_px(xR, fmt_size(row.size), wSize, base, fg, bg);
             continue;
         }
         bool chk = g_flChk[row.idx];
         Color fg = g_flLocked[row.idx] ? C_GREEN : (chk ? C_TEXT : C_DIM);
         char num[16];
         snprintf(num, sizeof(num), "%d", row.num);
-        put_right(COL_NUM, W_NUM, num, base, C_DIM, bg);
-        put_left(COL_NAME, chk ? "[x]" : "[ ]", base, fg, bg);
-        put_left(COL_NAME + 4, fit(row.text, wName), base, fg, bg);
-        put_right(colSize, W_SPEED, fmt_size(g_fl.files[row.idx].size), base, fg, bg);
+        put_right_px(xNumR, num, 4, base, C_DIM, bg);
+        draw_text(chk ? "[x]" : "[ ]", xChk, base, fg, bg);
+        draw_text(fit(row.text, wName), xName, base, fg, bg);
+        put_right_px(xR, fmt_size(g_fl.files[row.idx].size), wSize, base, fg, bg);
     }
-    set_font_px(FONT_PX);                 // дальше (подсказки, подпись) снова основной шрифт
+    // Полоса прокрутки справа, если строк больше, чем помещается
+    int total = (int)g_flRows.size();
+    if (total > vis && vis > 0) {
+        int trackY = FLW_ROWS_Y, trackH = vis * FLW_ROW_H;
+        int thumbH = trackH * vis / total; if (thumbH < 24) thumbH = 24;
+        int thumbY = trackY + (trackH - thumbH) * g_flTop / (total - vis);
+        g_scene->FillRect(FLW_X + FLW_W - 8, trackY, 5, trackH, C_TRACK);
+        g_scene->FillRect(FLW_X + FLW_W - 8, thumbY, 5, thumbH, C_EDGE);
+    }
+    set_font_px(FONT_PX);                 // дальше снова основной шрифт
     g_cellW = bigCell;
 
-    static const int HINT_BASELINE   = FOOTER_Y + 25;
-    static const int CREDIT_BASELINE = HINT_BASELINE + 32;
-    if (!g_flMsg.empty()) put_center(cx, fit(g_flMsg, 100), FOOTER_Y - 6, C_RED, C_BG);
+    if (!g_flMsg.empty()) put_center(cx, fit(g_flMsg, innerChars), FLW_Y + FLW_H - 64, C_RED, C_PANEL);
     std::string act = g_fl.complete ? tr("tc_hint_get", "download checked") : tr("tc_hint_apply", "apply");
     std::string hint = "{updown} " + tr("tc_hint_select", "select");
     if (!fl_row_locked(g_flSel)) hint += "   {cross} " + tr("tc_hint_check", "check");
     hint += "   {square} " + act + "   {circle} " + tr("tc_back", "back");
-    put_center_rich(cx, hint, HINT_BASELINE, C_DIM, C_BG);
-    put_center(cx, "ps4torrent client v" APP_VERSION " Created by SergioPoverony and Mr.Claude", CREDIT_BASELINE, C_DIMMER, C_BG);
+    put_center_rich(cx, hint, FLW_Y + FLW_H - 26, C_TEXT, C_PANEL);
 }
 
 // Окно с состоянием запуска службы (пока она не готова): проверка, отправка, ошибка с подсказкой, что делать.
@@ -799,7 +840,6 @@ static void draw_svc_panel()
 
 static void draw_all()
 {
-    if (g_modal == MODAL_FILES) { draw_files(); return; }
     g_scene->FillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, C_BG);
 
     int statusX;
@@ -890,7 +930,7 @@ static void draw_all()
         if (g_sel < (int)g_status.items.size() && g_status.items[g_sel].nfiles > 1) hint += "   {square} " + tr("tc_hint_files", "files");
         hint += "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("btn_quit", "shut down");
     }
-    if (!hint.empty()) put_center_rich(FRAME_WIDTH / 2, hint, HINT_BASELINE, C_DIM, C_BG);
+    if (!hint.empty() && g_modal == MODAL_NONE) put_center_rich(FRAME_WIDTH / 2, hint, HINT_BASELINE, C_DIM, C_BG);
 
     put_center(FRAME_WIDTH / 2, "ps4torrent client v" APP_VERSION " Created by SergioPoverony and Mr.Claude",
                CREDIT_BASELINE, C_DIMMER, C_BG);
@@ -1137,7 +1177,7 @@ void ui_pump()
             g_redraw = 2;
         }
         if (g_flSel < g_flTop) g_flTop = g_flSel;
-        if (g_flSel >= g_flTop + fl_visible()) g_flTop = g_flSel - fl_visible() + 1;
+        if (g_flSel >= g_flTop + fl_visible_rows()) g_flTop = g_flSel - fl_visible_rows() + 1;
     } else if (g_modal == MODAL_QUIT) {
         upSince = downSince = 0;
         if (cross) {
