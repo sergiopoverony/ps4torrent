@@ -404,6 +404,7 @@ static std::string status_label(const std::string& s)
     if (s == "offline")     return tr("tc_st_offline", "drive gone");
     if (s == "waiting")     return tr("tc_st_waiting", "waiting");
     if (s == "queued")      return tr("tc_st_queued", "queued");
+    if (s == "error")       return tr("tc_st_error", "error");
     return s;
 }
 
@@ -413,6 +414,7 @@ static Color status_color(const std::string& s)
     if (s == "downloading") return C_TEXT;
     if (s == "offline")     return C_RED;
     if (s == "waiting")     return C_AMBER;
+    if (s == "error")       return C_RED;
     if (s == "paused")      return C_AMBER;
     return C_DIM;
 }

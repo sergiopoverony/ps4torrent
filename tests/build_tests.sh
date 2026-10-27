@@ -2,7 +2,7 @@
 # Сборка тестовых бинарников для запуска НА КОМПЬЮТЕРЕ (Linux, g++): те же исходники, что у консольной программы,
 # но с подставными путями (-DUSB_BASE и др.), адресами /tmp/ft/... и санитайзерами памяти.
 # Использование: cd <папка с исходниками, где main.cpp>; bash tests/build_tests.sh [имя ...]   (без имён: собрать все)
-SRC="main.cpp assets.S writer.cpp incoming.cpp log.cpp net.cpp bencode.cpp sha1.cpp torrent.cpp tracker.cpp storage.cpp download.cpp resume.cpp swarm.cpp upload.cpp lang_gen.cpp lang_gen.S"
+SRC="main.cpp assets.S writer.cpp incoming.cpp log.cpp net.cpp bencode.cpp sha1.cpp torrent.cpp tracker.cpp storage.cpp download.cpp resume.cpp swarm.cpp upload.cpp direct.cpp lang_gen.cpp lang_gen.S"
 sh ./mklang.sh
 BASE="-std=c++17 -O1 -g -Wall -fsanitize=address,undefined -DHOST_TEST -DINTERNAL_ROOT=\\\"/tmp/ft/internal/torrents\\\" -DLISTEN_PORT=26881 -DUSB_BASE=\\\"/tmp/ft/usb\\\" -DHTTP_PORT=18787 -DLOG_DIR=\\\"/tmp/ft/log\\\" -DCONFIG_FILE=\\\"/tmp/ft/log/config.txt\\\""
 declare -A V
@@ -17,6 +17,7 @@ V[daemon_sel]=""                                                         # sel_r
 V[daemon_diag]="-DMNT_DIR=\\\"/tmp/ft/mnt_mock\\\" -DDEV_DIR=\\\"/tmp/ft/dev_mock\\\""   # diag_run
 V[daemon_fix]="-DAUTOSTART_DEFAULT=1 -DLOOP_GAP_S=4 -DWRITE_RETRY_S=60 -DNET_REFRESH_S=100000"      # fix_run
 V[daemon_net2]="-DAUTOSTART_DEFAULT=1 -DLOOP_GAP_S=4 -DWRITE_RETRY_S=4 -DNET_REFRESH_S=8 -DNET_POLL_DOWN_S=2 -DNET_POLL_UP_S=3 -DNET_FALLBACK_S=12 -DTAKEOVER_WAIT_S=8"   # fd_run, heal_run, takeover_run
+V[daemon_direct]="-DDIRECT_RETRY_S=2"                                # direct_test (загрузки по ссылке http://)
 V[daemon_memg]="-DAUTOSTART_DEFAULT=1 -DMEM_PAUSE_GAP_S=4 -DMEM_RESUME_AFTER_S=8 -DMEM_RESUME_GAP_S=6 -DMEM_EVENT_HOLD_S=10"   # memguard_run (автопауза при нехватке памяти)
 names="$@"; [ -z "$names" ] && names="${!V[@]}"
 for n in $names; do
