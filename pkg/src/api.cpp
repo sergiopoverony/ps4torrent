@@ -5,6 +5,7 @@
 #include "log.h"
 
 static const int TIMEOUT_MS = 3000;
+static const int FILES_TIMEOUT_MS = 8000;      // список файлов готовит главный поток службы, у большой раздачи ответ дольше
 static std::string g_lastErr;
 
 static std::string with_token(const std::string& path)
@@ -42,6 +43,8 @@ bool api_refresh_status()
         x.peers = (int)it["peers"].asInt(0);
         x.paused = it["paused"].asBool(false);
         x.lowSpace = it["low_space"].asBool(false);
+        x.nfiles = (int)it["nfiles"].asInt(0);
+        x.nskip = (int)it["nskip"].asInt(0);
         x.root = it["root"].asStr();
         x.title = it["title"].asStr();
         if (x.hash.empty()) continue;   // битая запись: пропускаем, а не падаем
@@ -109,6 +112,33 @@ bool api_quit()
     if (r.status != 200) { g_lastErr = "server returned status " + std::to_string(r.status); return false; }
     logf_("api: /quit -> %s", r.body.c_str());   // ожидаем "bye"
     return true;
+}
+
+bool api_files(const std::string& hash, FileList& out)
+{
+    out = FileList();
+    HttpResult r = http_get(g_host, g_port, with_token("/api/files?hash=" + hash), FILES_TIMEOUT_MS);
+    if (!r.connected) { g_lastErr = "no connection to ps4torrentd"; return false; }
+    JsonValue j;
+    if (!json_parse(r.body, j) || j.type != JsonValue::OBJ) { g_lastErr = "bad JSON from server"; return false; }
+    if (!j["ok"].asBool(false)) { g_lastErr = j["error"].asStr("request failed"); return false; }
+    out.title = j["title"].asStr();
+    out.complete = j["complete"].asBool(false);
+    const JsonValue& fa = j["files"];
+    for (size_t i = 0; i < fa.arr.size(); i++) {
+        FileEntry e;
+        e.idx = (int)fa.arr[i]["i"].asInt((long long)i);
+        e.size = (uint64_t)fa.arr[i]["size"].asInt(0);
+        e.sel = fa.arr[i]["sel"].asBool(true);
+        e.path = fa.arr[i]["path"].asStr();
+        out.files.push_back(e);
+    }
+    return true;
+}
+
+bool api_select(const std::string& hash, const std::string& skipList)
+{
+    return simple_cmd("/api/select?hash=" + hash + "&skip=" + skipList);
 }
 
 std::string api_last_error() { return g_lastErr; }

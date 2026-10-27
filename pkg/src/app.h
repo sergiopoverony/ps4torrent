@@ -15,6 +15,8 @@ struct Item {
     int peers = 0;
     bool paused = false;
     bool lowSpace = false;
+    int nfiles = 0;         // сколько файлов в раздаче
+    int nskip = 0;          // сколько из них снято с загрузки
     std::string root;       // куда качается (для информации)
     std::string title;
 };

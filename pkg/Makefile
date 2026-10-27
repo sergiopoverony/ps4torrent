@@ -24,7 +24,12 @@ APPVER      := $(shell sed -n 's/.*APP_VERSION "\(.*\)".*/\1/p' ../version.h)
 
 # Всё, что кладётся в PKG (/app0/assets/...). ELF службы копируется сюда из ../release (см. ниже).
 ASSETS      := assets/fonts/DejaVuSansMono.ttf assets/fonts/LICENSE-DejaVu.txt assets/images/title.png \
-               assets/misc/lang_en.json assets/misc/lang_ru.json assets/misc/ps4torrentd.elf
+               assets/misc/ps4torrentd.elf $(LANGASSETS)
+
+# Языки: один общий набор для службы и приложения лежит в ../assets/lang/<код>.json. Приложение читает из PKG
+# файлы assets/misc/lang_<код>.json, их копии делаются при сборке (новый язык = положить xx.json в ../assets/lang).
+LANGSRC     := $(wildcard ../assets/lang/*.json)
+LANGASSETS  := $(patsubst ../assets/lang/%.json,assets/misc/lang_%.json,$(LANGSRC))
 
 # Системные модули для приложения (без libc.prx приложение сразу вылетает). Берутся из набора OpenOrbis.
 LIBMODULES  := sce_module/libc.prx sce_module/libSceFios2.prx
@@ -77,6 +82,9 @@ sce_module/%.prx:
 	if [ -z "$$src" ]; then echo "Не найден $*.prx в $(TOOLCHAIN). Скопируйте его вручную в pkg/sce_module/"; exit 1; fi; \
 	echo "cp $$src $@"; cp "$$src" $@
 
+assets/misc/lang_%.json: ../assets/lang/%.json
+	cp $< $@
+
 # Служба берётся из ../release (её обновляет "make full").
 assets/misc/ps4torrentd.elf: ../release/ps4torrentd.elf
 	cp $< $@
@@ -115,7 +123,7 @@ $(INTDIR)/%.o: $(PROJDIR)/%.cpp $(wildcard $(PROJDIR)/*.h) ../version.h
 	$(CCX) $(CXXFLAGS) -o $@ $<
 
 clean:
-	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4torrentd.elf
+	rm -rf $(CONTENT_ID).pkg pkg.gp4 eboot.bin build sce_sys sce_module assets/misc/ps4torrentd.elf assets/misc/lang_*.json
 
 # Собирает службу в корне репозитория (нужен PS4_PAYLOAD_SDK), копирует её в ../release/ps4torrentd.elf
 # и затем чисто пересобирает сам PKG. Используйте это вместо простого "make", когда меняли код или версию.

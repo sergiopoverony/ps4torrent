@@ -80,10 +80,20 @@ static bool     g_bannerOk = false;
 static int      g_bannerW  = 0;   // ширина на экране при высоте BANNER_H (с сохранением пропорций)
 static uint64_t g_lastRefresh = 0;
 
-enum Modal { MODAL_NONE, MODAL_DELETE, MODAL_QUIT };
+enum Modal { MODAL_NONE, MODAL_DELETE, MODAL_QUIT, MODAL_FILES };
 static Modal        g_modal = MODAL_NONE;
 static std::string  g_modalHash;
 static std::string  g_modalTitle;
+
+// Экран "Files": список файлов раздачи (как кнопка Files на веб-странице). Нужен, чтобы видеть, что есть в раздаче
+// (имя и размер), и докачать забытое: у завершённой раздачи можно отметить ещё не скачанный файл, и он будет качаться.
+static std::string        g_flHash;
+static FileList           g_fl;
+static std::vector<bool>  g_flChk;       // текущие галочки
+static std::vector<bool>  g_flLocked;    // у завершённой раздачи: файл уже скачан, галочку не снять
+static std::vector<std::string> g_flName;     // имя для показа (без общей папки раздачи)
+static int                g_flSel = 0, g_flTop = 0;
+static std::string        g_flMsg;       // сообщение об ошибке на экране списка
 
 // Запуск службы (payload) из приложения: проверка, ожидание, ошибка, готово. См. svc_step() ниже.
 enum SvcState { SVC_CHECK, SVC_WAITING, SVC_FAILED, SVC_READY };
@@ -525,6 +535,112 @@ static void draw_modal()
                     y0 + 230, C_TEXT, C_PANEL);
 }
 
+static int fl_visible() { return (FOOTER_Y - 10 - ROWS_Y) / ROW_H; }
+
+static bool fl_has_new()
+{
+    for (size_t i = 0; i < g_flChk.size(); i++) if (g_flChk[i] && !g_flLocked[i]) return true;
+    return false;
+}
+
+// Открывает экран списка файлов выбранной раздачи. Возвращает false, если службе не удалось получить список.
+static bool fl_open(const std::string& hash)
+{
+    FileList fl;
+    if (!api_files(hash, fl) || fl.files.empty()) { g_flMsg = tr("tc_files_fail", "Could not get the file list"); return false; }
+    g_fl = fl;
+    g_flHash = hash;
+    size_t n = fl.files.size();
+    g_flChk.assign(n, false);
+    g_flLocked.assign(n, false);
+    for (size_t i = 0; i < n; i++) {
+        g_flChk[i] = fl.files[i].sel;
+        g_flLocked[i] = fl.complete && fl.files[i].sel;
+    }
+    // Общая папка раздачи (первый компонент пути у всех файлов) показывать незачем
+    std::string root;
+    bool strip = true;
+    for (size_t i = 0; i < n && strip; i++) {
+        size_t sl = fl.files[i].path.find('/');
+        if (sl == std::string::npos || sl == 0) { strip = false; break; }
+        std::string r0 = fl.files[i].path.substr(0, sl);
+        if (i == 0) root = r0; else if (r0 != root) strip = false;
+    }
+    g_flName.assign(n, "");
+    for (size_t i = 0; i < n; i++) g_flName[i] = strip ? fl.files[i].path.substr(root.size() + 1) : fl.files[i].path;
+    g_flSel = g_flTop = 0;
+    g_flMsg.clear();
+    return true;
+}
+
+// Список СНЯТЫХ файлов в виде "3,5-9" (так его ждёт /api/select)
+static std::string fl_skip_text()
+{
+    std::string out;
+    size_t k = 0, n = g_flChk.size();
+    while (k < n) {
+        if (g_flChk[k] || g_flLocked[k]) { k++; continue; }
+        size_t e = k;
+        while (e + 1 < n && !(g_flChk[e + 1] || g_flLocked[e + 1])) e++;
+        char b[40];
+        if (e > k) snprintf(b, sizeof(b), "%d-%d", (int)k, (int)e); else snprintf(b, sizeof(b), "%d", (int)k);
+        if (!out.empty()) out += ",";
+        out += b;
+        k = e + 1;
+    }
+    return out;
+}
+
+static void draw_files()
+{
+    g_scene->FillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, C_BG);
+    const int cx = FRAME_WIDTH / 2;
+    put_center(cx, fit(tr("tc_files_title", "Files") + ": " + g_fl.title, (FRAME_WIDTH - 2 * MARGIN_X) / g_cellW), BANNER_TOP + 34, C_TEXT, C_BG);
+
+    int on = 0;
+    uint64_t onBytes = 0;
+    for (size_t i = 0; i < g_flChk.size(); i++) if (g_flChk[i]) { on++; onBytes += g_fl.files[i].size; }
+    char cnt[96];
+    snprintf(cnt, sizeof(cnt), "%d / %d  %s", on, (int)g_flChk.size(), fmt_size(onBytes).c_str());
+    put_center(cx, tr("tc_files_selected", "selected") + ": " + cnt, BANNER_TOP + 70, C_DIM, C_BG);
+
+    g_scene->FillRect(0, HEADER_Y, FRAME_WIDTH, ROW_H, C_HEAD);
+    int hb = HEADER_Y + 25;
+    put_right(COL_NUM, W_NUM, "#", hb, C_DIM, C_HEAD);
+    put_left(COL_NAME, tr("tc_files_hdr_name", "File"), hb, C_DIM, C_HEAD);
+    put_right(COL_SPEED, W_SPEED, tr("tc_hdr_size", "Size"), hb, C_DIM, C_HEAD);
+
+    const int vis = fl_visible();
+    const int wName = COL_SPEED - COL_NAME - 5;
+    for (int v = 0; v < vis; v++) {
+        int idx = g_flTop + v;
+        if (idx >= (int)g_fl.files.size()) break;
+        bool selected = (idx == g_flSel);
+        int top = ROWS_Y + v * ROW_H;
+        Color bg = selected ? C_SEL : ((idx % 2) ? C_ROW2 : C_BG);
+        g_scene->FillRect(0, top, FRAME_WIDTH, ROW_H, bg);
+        int base = top + 25;
+        bool chk = g_flChk[idx];
+        Color fg = g_flLocked[idx] ? C_GREEN : (chk ? C_TEXT : C_DIM);
+        char num[16];
+        snprintf(num, sizeof(num), "%d", idx + 1);
+        put_right(COL_NUM, W_NUM, num, base, C_DIM, bg);
+        put_left(COL_NAME, chk ? "[x]" : "[ ]", base, fg, bg);
+        put_left(COL_NAME + 4, fit(g_flName[idx], wName), base, fg, bg);
+        put_right(COL_SPEED, W_SPEED, fmt_size(g_fl.files[idx].size), base, fg, bg);
+    }
+
+    static const int HINT_BASELINE   = FOOTER_Y + 25;
+    static const int CREDIT_BASELINE = HINT_BASELINE + 32;
+    if (!g_flMsg.empty()) put_center(cx, fit(g_flMsg, 100), FOOTER_Y - 6, C_RED, C_BG);
+    std::string act = g_fl.complete ? tr("tc_hint_get", "download checked") : tr("tc_hint_apply", "apply");
+    std::string hint = "{updown} " + tr("tc_hint_select", "select");
+    if (!g_flLocked[g_flSel]) hint += "   {cross} " + tr("tc_hint_check", "check");
+    hint += "   {square} " + act + "   {circle} " + tr("tc_back", "back");
+    put_center_rich(cx, hint, HINT_BASELINE, C_DIM, C_BG);
+    put_center(cx, "ps4torrent client v" APP_VERSION " Created by SergioPoverony and Mr.Claude", CREDIT_BASELINE, C_DIMMER, C_BG);
+}
+
 // Окно с состоянием запуска службы (пока она не готова): проверка, отправка, ошибка с подсказкой, что делать.
 static void draw_svc_panel()
 {
@@ -552,6 +668,7 @@ static void draw_svc_panel()
 
 static void draw_all()
 {
+    if (g_modal == MODAL_FILES) { draw_files(); return; }
     g_scene->FillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, C_BG);
 
     int statusX;
@@ -636,8 +753,11 @@ static void draw_all()
     std::string hint;
     if (g_svc == SVC_FAILED)  hint = "{cross} " + tr("tc_hint_retry", "try again");
     else if (svcDown)         hint = "{cross} " + tr("tc_hint_start", "start the service");
-    else if (g_svc == SVC_READY)
-        hint = "{updown} " + tr("tc_hint_select", "select") + "   {cross} " + tr("tc_hint_toggle", "pause/resume") + "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("btn_quit", "shut down");
+    else if (g_svc == SVC_READY) {
+        hint = "{updown} " + tr("tc_hint_select", "select") + "   {cross} " + tr("tc_hint_toggle", "pause/resume");
+        if (g_sel < (int)g_status.items.size() && g_status.items[g_sel].nfiles > 1) hint += "   {square} " + tr("tc_hint_files", "files");
+        hint += "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("btn_quit", "shut down");
+    }
     if (!hint.empty()) put_center_rich(FRAME_WIDTH / 2, hint, HINT_BASELINE, C_DIM, C_BG);
 
     put_center(FRAME_WIDTH / 2, "ps4torrent client v" APP_VERSION " Created by SergioPoverony and Mr.Claude",
@@ -861,6 +981,31 @@ void ui_pump()
         if (cross)       { api_delete(g_modalHash, false); refresh_status(); g_modal = MODAL_NONE; g_redraw = 2; }
         else if (square)  { api_delete(g_modalHash, true);  refresh_status(); g_modal = MODAL_NONE; g_redraw = 2; }
         else if (circle)  { g_modal = MODAL_NONE; g_redraw = 2; }
+    } else if (g_modal == MODAL_FILES) {
+        const int nfl = (int)g_fl.files.size();
+        if (step_repeat(up, upSince, upLast, now) && g_flSel > 0)              { g_flSel--; g_redraw = 2; }
+        if (step_repeat(down, downSince, downLast, now) && g_flSel + 1 < nfl)  { g_flSel++; g_redraw = 2; }
+        if (cross && !g_flLocked[g_flSel]) { g_flChk[g_flSel] = !g_flChk[g_flSel]; g_flMsg.clear(); g_redraw = 2; }
+        if (circle) { g_modal = MODAL_NONE; g_redraw = 2; }
+        if (square) {
+            if (g_fl.complete && !fl_has_new()) {
+                g_flMsg = tr("tc_files_nonew", "Check at least one file that is not downloaded yet");
+            } else {
+                int skipped = 0;
+                for (size_t i = 0; i < g_flChk.size(); i++) if (!(g_flChk[i] || g_flLocked[i])) skipped++;
+                if (skipped == (int)g_flChk.size()) {
+                    g_flMsg = tr("tc_files_none", "Check at least one file");
+                } else if (api_select(g_flHash, fl_skip_text())) {
+                    g_modal = MODAL_NONE;
+                    refresh_status();
+                } else {
+                    g_flMsg = api_last_error();
+                }
+            }
+            g_redraw = 2;
+        }
+        if (g_flSel < g_flTop) g_flTop = g_flSel;
+        if (g_flSel >= g_flTop + fl_visible()) g_flTop = g_flSel - fl_visible() + 1;
     } else if (g_modal == MODAL_QUIT) {
         upSince = downSince = 0;
         if (cross) {
@@ -880,6 +1025,10 @@ void ui_pump()
             if (step_repeat(down, downSince, downLast, now) && g_sel + 1 < n) { g_sel++; g_redraw = 2; }
 
             if (cross) toggle_selected();
+            if (square && g_status.items[g_sel].nfiles > 1) {
+                if (fl_open(g_status.items[g_sel].hash)) g_modal = MODAL_FILES;
+                g_redraw = 2;
+            }
             if (triangle) {
                 g_modalHash = g_status.items[g_sel].hash;
                 g_modalTitle = g_status.items[g_sel].title;
