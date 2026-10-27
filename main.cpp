@@ -2890,10 +2890,10 @@ static void respond_status(int c, int code, const char* text, const char* type, 
 static void respond(int c, const char* type, const std::string& body) { respond_status(c, 200, "OK", type, body); }
 
 // Вшитая картинка: браузер может держать её в кэше (значок и логотип не меняются).
-static void respond_bytes(int c, const char* type, const unsigned char* data, size_t len)
+static void respond_bytes(int c, const char* type, const unsigned char* data, size_t len, const char* cache = "max-age=3600")
 {
     char head[240];
-    int hl = snprintf(head, sizeof(head), "HTTP/1.0 200 OK\r\nContent-Type: %s\r\nCache-Control: max-age=3600\r\nContent-Length: %d\r\n\r\n", type, (int)len);
+    int hl = snprintf(head, sizeof(head), "HTTP/1.0 200 OK\r\nContent-Type: %s\r\nCache-Control: %s\r\nContent-Length: %d\r\n\r\n", type, cache, (int)len);
     send_all(c, head, (size_t)hl);
     send_all(c, (const char*)data, len);
 }
@@ -3215,7 +3215,7 @@ static void handle_client(int c)
         }
         for (int k = 0; k < g_langCount; k++)
             if (name == std::string(g_langFiles[k].code) + ".json") {
-                respond_bytes(c, "application/json; charset=utf-8", g_langFiles[k].start, (size_t)(g_langFiles[k].end - g_langFiles[k].start));
+                respond_bytes(c, "application/json; charset=utf-8", g_langFiles[k].start, (size_t)(g_langFiles[k].end - g_langFiles[k].start), "no-cache");
                 return;
             }
         respond_status(c, 404, "Not Found", "text/plain", "not found\n");
