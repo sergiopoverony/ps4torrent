@@ -13,6 +13,8 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <ctype.h>
 
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
@@ -27,7 +29,7 @@ extern "C" uint64_t sceKernelGetProcessTime(void);
 #define FRAME_HEIGHT  1080
 #define FRAME_DEPTH      4
 
-static const int FONT_PX   = 26;
+static const int FONT_PX   = 24;
 static const int ROW_H     = 40;    // чуть выше, чтобы под строкой поместилась полоска прогресса
 static const int BAR_H     = 4;
 static const int BAR_GAP   = 4;     // отступ снизу строки до полоски (разделяет соседние строки)
@@ -92,7 +94,10 @@ static FileList           g_fl;
 static std::vector<bool>  g_flChk;       // текущие галочки
 static std::vector<bool>  g_flLocked;    // у завершённой раздачи: файл уже скачан, галочку не снять
 static std::vector<std::string> g_flName;     // имя для показа (без общей папки раздачи)
-static int                g_flSel = 0, g_flTop = 0;
+static int                g_flSel = 0, g_flTop = 0;   // позиция в списке СТРОК (g_flRows), а не номер файла
+// Строка экрана файлов: файл (idx >= 0) или заголовок папки (idx = -1, members = номера файлов папки)
+struct FlRow { int idx; int num; std::string text; std::vector<int> members; uint64_t size; };
+static std::vector<FlRow> g_flRows;
 static std::string        g_flMsg;       // сообщение об ошибке на экране списка
 
 // Запуск службы (payload) из приложения: проверка, ожидание, ошибка, готово. См. svc_step() ниже.
@@ -536,6 +541,101 @@ static void draw_modal()
                     y0 + 230, C_TEXT, C_PANEL);
 }
 
+// Сравнение имён «по-человечески»: без учёта регистра, числа внутри имени сравниваются как числа (file2 < file10)
+static bool nat_less(const std::string& a, const std::string& b)
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        unsigned char x = (unsigned char)a[i], y = (unsigned char)b[j];
+        if (isdigit(x) && isdigit(y)) {
+            size_t i2 = i, j2 = j;
+            while (i2 < a.size() && a[i2] == '0') i2++;
+            while (j2 < b.size() && b[j2] == '0') j2++;
+            size_t ie = i2, je = j2;
+            while (ie < a.size() && isdigit((unsigned char)a[ie])) ie++;
+            while (je < b.size() && isdigit((unsigned char)b[je])) je++;
+            if (ie - i2 != je - j2) return (ie - i2) < (je - j2);
+            int c = a.compare(i2, ie - i2, b, j2, je - j2);
+            if (c != 0) return c < 0;
+            i = ie; j = je;
+            continue;
+        }
+        int lx = tolower(x), ly = tolower(y);
+        if (lx != ly) return lx < ly;
+        i++; j++;
+    }
+    return (a.size() - i) < (b.size() - j);
+}
+
+// Строит порядок показа как на веб-странице: сначала файлы без папки, затем папки; внутри всё по алфавиту
+static void fl_build_rows()
+{
+    g_flRows.clear();
+    const size_t n = g_flName.size();
+    std::vector<int> rootFiles;
+    std::vector<std::string> dirNames;
+    std::vector<std::vector<int> > dirFiles;
+    for (size_t i = 0; i < n; i++) {
+        size_t sl = g_flName[i].find('/');
+        if (sl == std::string::npos || sl == 0) { rootFiles.push_back((int)i); continue; }
+        std::string d = g_flName[i].substr(0, sl);
+        size_t k = 0;
+        while (k < dirNames.size() && dirNames[k] != d) k++;
+        if (k == dirNames.size()) { dirNames.push_back(d); dirFiles.push_back(std::vector<int>()); }
+        dirFiles[k].push_back((int)i);
+    }
+    std::vector<size_t> order(dirNames.size());
+    for (size_t k = 0; k < order.size(); k++) order[k] = k;
+    for (size_t a = 1; a < order.size(); a++)            // вставками: папок немного
+        for (size_t b = a; b > 0 && nat_less(dirNames[order[b]], dirNames[order[b - 1]]); b--) std::swap(order[b], order[b - 1]);
+    struct Cmp { bool operator()(int a, int b) const { return nat_less(g_flName[a], g_flName[b]); } };
+    std::sort(rootFiles.begin(), rootFiles.end(), Cmp());
+    int num = 0;
+    for (size_t r = 0; r < rootFiles.size(); r++) {
+        FlRow row; row.idx = rootFiles[r]; row.num = ++num; row.text = g_flName[rootFiles[r]]; row.size = 0;
+        g_flRows.push_back(row);
+    }
+    for (size_t o = 0; o < order.size(); o++) {
+        size_t k = order[o];
+        std::sort(dirFiles[k].begin(), dirFiles[k].end(), Cmp());
+        FlRow h; h.idx = -1; h.num = 0; h.text = dirNames[k] + "/"; h.members = dirFiles[k]; h.size = 0;
+        for (size_t m = 0; m < dirFiles[k].size(); m++) h.size += g_fl.files[dirFiles[k][m]].size;
+        g_flRows.push_back(h);
+        for (size_t m = 0; m < dirFiles[k].size(); m++) {
+            int f = dirFiles[k][m];
+            FlRow row; row.idx = f; row.num = ++num; row.text = "  " + g_flName[f].substr(dirNames[k].size() + 1); row.size = 0;
+            g_flRows.push_back(row);
+        }
+    }
+}
+
+// Состояние галочки папки: 2 = все, 1 = часть, 0 = ни одного
+static int fl_dir_state(const FlRow& h)
+{
+    size_t on = 0;
+    for (size_t m = 0; m < h.members.size(); m++) if (g_flChk[h.members[m]] || g_flLocked[h.members[m]]) on++;
+    return on == 0 ? 0 : (on == h.members.size() ? 2 : 1);
+}
+
+// Крест на строке: файл переключается сам, папка — все свои файлы сразу (скачанные в завершённой раздаче не трогаем)
+static void fl_toggle_row(int r)
+{
+    if (r < 0 || r >= (int)g_flRows.size()) return;
+    const FlRow& row = g_flRows[r];
+    if (row.idx >= 0) { if (!g_flLocked[row.idx]) g_flChk[row.idx] = !g_flChk[row.idx]; return; }
+    bool setOn = fl_dir_state(row) != 2;
+    for (size_t m = 0; m < row.members.size(); m++) if (!g_flLocked[row.members[m]]) g_flChk[row.members[m]] = setOn;
+}
+
+static bool fl_row_locked(int r)
+{
+    if (r < 0 || r >= (int)g_flRows.size()) return true;
+    const FlRow& row = g_flRows[r];
+    if (row.idx >= 0) return g_flLocked[row.idx];
+    for (size_t m = 0; m < row.members.size(); m++) if (!g_flLocked[row.members[m]]) return false;
+    return true;
+}
+
 static int fl_visible() { return (FOOTER_Y - 10 - ROWS_Y) / ROW_H; }
 
 static bool fl_has_new()
@@ -569,6 +669,7 @@ static bool fl_open(const std::string& hash)
     }
     g_flName.assign(n, "");
     for (size_t i = 0; i < n; i++) g_flName[i] = strip ? fl.files[i].path.substr(root.size() + 1) : fl.files[i].path;
+    fl_build_rows();
     g_flSel = g_flTop = 0;
     g_flMsg.clear();
     return true;
@@ -614,21 +715,32 @@ static void draw_files()
     const int vis = fl_visible();
     const int wName = COL_SPEED - COL_NAME - 5;
     for (int v = 0; v < vis; v++) {
-        int idx = g_flTop + v;
-        if (idx >= (int)g_fl.files.size()) break;
-        bool selected = (idx == g_flSel);
+        int ri = g_flTop + v;
+        if (ri >= (int)g_flRows.size()) break;
+        const FlRow& row = g_flRows[ri];
+        bool selected = (ri == g_flSel);
         int top = ROWS_Y + v * ROW_H;
-        Color bg = selected ? C_SEL : ((idx % 2) ? C_ROW2 : C_BG);
+        Color bg = selected ? C_SEL : ((ri % 2) ? C_ROW2 : C_BG);
         g_scene->FillRect(0, top, FRAME_WIDTH, ROW_H, bg);
         int base = top + 25;
-        bool chk = g_flChk[idx];
-        Color fg = g_flLocked[idx] ? C_GREEN : (chk ? C_TEXT : C_DIM);
+        if (row.idx < 0) {                                   // заголовок папки
+            int st = fl_dir_state(row);
+            Color fg = fl_row_locked(ri) ? C_GREEN : (st ? C_AMBER : C_DIM);
+            char cntb[48];
+            snprintf(cntb, sizeof(cntb), "  (%d)", (int)row.members.size());
+            put_left(COL_NAME, st == 2 ? "[x]" : (st == 1 ? "[-]" : "[ ]"), base, fg, bg);
+            put_left(COL_NAME + 4, fit(row.text + cntb, wName), base, fg, bg);
+            put_right(COL_SPEED, W_SPEED, fmt_size(row.size), base, fg, bg);
+            continue;
+        }
+        bool chk = g_flChk[row.idx];
+        Color fg = g_flLocked[row.idx] ? C_GREEN : (chk ? C_TEXT : C_DIM);
         char num[16];
-        snprintf(num, sizeof(num), "%d", idx + 1);
+        snprintf(num, sizeof(num), "%d", row.num);
         put_right(COL_NUM, W_NUM, num, base, C_DIM, bg);
         put_left(COL_NAME, chk ? "[x]" : "[ ]", base, fg, bg);
-        put_left(COL_NAME + 4, fit(g_flName[idx], wName), base, fg, bg);
-        put_right(COL_SPEED, W_SPEED, fmt_size(g_fl.files[idx].size), base, fg, bg);
+        put_left(COL_NAME + 4, fit(row.text, wName), base, fg, bg);
+        put_right(COL_SPEED, W_SPEED, fmt_size(g_fl.files[row.idx].size), base, fg, bg);
     }
 
     static const int HINT_BASELINE   = FOOTER_Y + 25;
@@ -636,7 +748,7 @@ static void draw_files()
     if (!g_flMsg.empty()) put_center(cx, fit(g_flMsg, 100), FOOTER_Y - 6, C_RED, C_BG);
     std::string act = g_fl.complete ? tr("tc_hint_get", "download checked") : tr("tc_hint_apply", "apply");
     std::string hint = "{updown} " + tr("tc_hint_select", "select");
-    if (!g_flLocked[g_flSel]) hint += "   {cross} " + tr("tc_hint_check", "check");
+    if (!fl_row_locked(g_flSel)) hint += "   {cross} " + tr("tc_hint_check", "check");
     hint += "   {square} " + act + "   {circle} " + tr("tc_back", "back");
     put_center_rich(cx, hint, HINT_BASELINE, C_DIM, C_BG);
     put_center(cx, "ps4torrent client v" APP_VERSION " Created by SergioPoverony and Mr.Claude", CREDIT_BASELINE, C_DIMMER, C_BG);
@@ -984,10 +1096,10 @@ void ui_pump()
         else if (square)  { api_delete(g_modalHash, true);  refresh_status(); g_modal = MODAL_NONE; g_redraw = 2; }
         else if (circle)  { g_modal = MODAL_NONE; g_redraw = 2; }
     } else if (g_modal == MODAL_FILES) {
-        const int nfl = (int)g_fl.files.size();
+        const int nfl = (int)g_flRows.size();
         if (step_repeat(up, upSince, upLast, now) && g_flSel > 0)              { g_flSel--; g_redraw = 2; }
         if (step_repeat(down, downSince, downLast, now) && g_flSel + 1 < nfl)  { g_flSel++; g_redraw = 2; }
-        if (cross && !g_flLocked[g_flSel]) { g_flChk[g_flSel] = !g_flChk[g_flSel]; g_flMsg.clear(); g_redraw = 2; }
+        if (cross && !fl_row_locked(g_flSel)) { fl_toggle_row(g_flSel); g_flMsg.clear(); g_redraw = 2; }
         if (circle) { g_modal = MODAL_NONE; g_redraw = 2; }
         if (square) {
             if (g_fl.complete && !fl_has_new()) {
