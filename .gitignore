@@ -12,3 +12,4 @@ pkg/*.pkg
 pkg/assets/misc/ps4torrentd.elf
 lang_gen.S
 lang_gen.cpp
+pkg/assets/misc/lang_*.json

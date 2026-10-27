@@ -30,6 +30,7 @@
 | Языки и выключение | `ft/lang_test.py` | 9/9 |
 | Автопауза при нехватке памяти | `ft/memguard_run.sh` (`memguard_test.py`, бинарник `daemon_memg`) | 21/21 |
 | Дубликаты | `ft/dup_test.py` | 9/9 |
+| Докачка файла у завершённой раздачи, защита от сна | `ft/reopen_test.py` (бинарник `daemon_sel`; запускать одной копией, торрент `Big8M.torrent` должен соответствовать данным в `/tmp/ft/src/Big8M`: при несовпадении пересоздать через `mk.py`: `make("Big8M", [("big.bin", 26000000), ("extra/more.bin", 9000000)], ..., )` с `PL = 8388608`) | 15/15 |
 
 Каждый `*_run.sh` пишет результат в `<имя>.result`. Тесты на ThreadSanitizer: `tsan_net_run.sh` (бинарник `daemon_tsan`
 собирается как остальные, но с `-fsanitize=thread` вместо address,undefined).

@@ -1034,6 +1034,33 @@ static int adopt_incoming(const unsigned char infoHash[20], int fd, const std::s
 #define MEM_RESUME_AFTER_S 90  // память должна быть в порядке столько секунд подряд, чтобы вернуть одну загрузку
 #endif
 
+// Защита от сна: пока хоть одна загрузка идёт (или проверяется), раз в KEEP_AWAKE_S секунд "трогаем" таймер простоя консоли,
+// и она не уходит в режим покоя. Когда всё докачано, на паузе или ждёт, вызовов нет: консоль засыпает как обычно.
+#ifndef KEEP_AWAKE_S
+#define KEEP_AWAKE_S 5
+#endif
+#ifndef HOST_TEST
+extern "C" int sceSystemServicePowerTick(void);
+#endif
+static void keep_awake(time_t now)
+{
+    static time_t last = 0;
+    static int calls = 0;
+    if (now - last < KEEP_AWAKE_S) return;
+    bool busy = false;
+    for (size_t k = 0; k < g_items.size(); k++) if (g_items[k]->running) { busy = true; break; }
+    if (!busy) return;
+    last = now;
+    calls++;
+#ifdef HOST_TEST
+    FILE* f = fopen("/tmp/ft/keep_awake_calls", "w");          // тесты: считаем вызовы
+    if (f) { fprintf(f, "%d\n", calls); fclose(f); }
+#else
+    int r = sceSystemServicePowerTick();
+    if (calls == 1) logf_("sleep guard: sceSystemServicePowerTick returned %d (0 = accepted), console will not sleep while downloading", r);
+#endif
+}
+
 #ifdef HOST_TEST
 static long long free_flex_bytes()       // тесты: значение из файла (МБ); нет файла = неизвестно
 {
@@ -2204,7 +2231,7 @@ function row(i){
   var b = '';
   if (i.status === 'paused') b += btn('resume', i.hash, E(T('b_resume')));
   else if (i.status !== 'complete' && i.status !== 'offline') b += btn('pause', i.hash, E(T('b_pause')));
-  if (i.nfiles > 1 && i.status !== 'complete') b += btn('files', i.hash, E(T('b_files')));
+  if (i.nfiles > 1) b += btn('files', i.hash, E(T('b_files')));
   b += btn('delete', i.hash, E(T('b_remove')), 'dng', i.title);
   b += btn('delete_files', i.hash, E(T('b_remove_files')), 'dng', i.title);
   var eta = i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : '';
@@ -2484,7 +2511,7 @@ function renderFiles2(){
   var html = '', box = $('f2list'), keep = box.scrollTop;
   var row = function(g, gi, i, text, cls){
     var x = g.files[i];
-    return '<label class="' + cls + '"><input type="checkbox" data-g="' + gi + '" data-f="' + i + '"' + (g.chk[i] ? ' checked' : '') + '><span>' + E(text) + '</span><span class="sz mut">' + sz(x.size) + '</span></label>';
+    return '<label class="' + cls + '"><input type="checkbox" data-g="' + gi + '" data-f="' + i + '"' + ((g.chk[i] || (f2.locked && f2.locked[i])) ? ' checked' : '') + (f2.locked && f2.locked[i] ? ' disabled' : '') + '><span>' + E(text) + '</span><span class="sz mut">' + sz(x.size) + '</span></label>';
   };
   f2.groups.forEach(function(g, gi){
     if (f2.groups.length > 1) {
@@ -2530,10 +2557,11 @@ $('f2none').onclick = function(){ if (f2) setAll2(false); };
 $('f2cancel').onclick = closeDialog;
 
 function openFiles2(groups, mode, extra){
-  f2 = { mode: mode, groups: groups, hash: extra.hash || '', drive: extra.drive || '', start: extra.start, label: extra.label || '' };
+  f2 = { mode: mode, groups: groups, hash: extra.hash || '', drive: extra.drive || '', start: extra.start, label: extra.label || '',
+         done: !!extra.done, locked: extra.done ? groups[0].chk.slice() : null };      // завершённая раздача: уже скачанные файлы можно только смотреть
   $('dlg').style.display = 'none';
   $('f2title').textContent = mode === 'add' ? T('f2_title_add') : T('f2_title_edit', extra.title || '');
-  $('f2go').textContent = mode === 'add' ? T('f2_start') : T('f2_apply');
+  $('f2go').textContent = mode === 'add' ? T('f2_start') : (f2.done ? T('f2_get') : T('f2_apply'));
   $('f2back').style.display = mode === 'add' ? '' : 'none';
   renderFiles2();
   $('dlg2').style.display = 'flex';
@@ -2546,7 +2574,7 @@ function openTaskFiles(hash){
     var paths = d.files.map(function(x){ return x.path; }), root = paths[0].indexOf('/') > 0 ? paths[0].split('/')[0] : '';
     var strip = root && paths.every(function(p){ return p.indexOf(root + '/') === 0; });
     openFiles2([{ title: d.title, files: d.files.map(function(x){ return { path: strip ? x.path.substr(root.length + 1) : x.path, size: x.size }; }), chk: d.files.map(function(x){ return !!x.sel; }) }],
-               'edit', { hash: d.hash, title: d.title });
+               'edit', { hash: d.hash, title: d.title, done: !!d.complete });
   }).catch(function(){ say(T('noanswer'), true); });
 }
 
@@ -2554,6 +2582,11 @@ $('f2go').onclick = function(){
   if (!f2) return;
   var m = f2;
   if (m.mode === 'edit') {
+    if (m.done) {      // у завершённой раздачи скачанное остаётся; нужна хотя бы одна новая галочка
+      var cc = m.groups[0].chk.map(function(v, i){ return v || m.locked[i]; });
+      if (!cc.some(function(v, i){ return v && !m.locked[i]; })) { say(T('f2_nonew'), true); return; }
+      m.groups[0].chk = cc;
+    }
     var txt = skipText(m.groups[0].chk);
     closeDialog();
     api('/api/select?hash=' + m.hash + '&skip=' + encodeURIComponent(txt)).then(function(r){ return r.json(); })
@@ -3414,6 +3447,70 @@ static void try_apply_selection(Item& it, time_t now)
           (int)(nf - item_skipped_files(it)), (int)nf, (unsigned long long)(item_size_bytes(it) >> 20));
 }
 
+// Завершённая раздача: пользователь вернул галочку файлу, который раньше сняли (или забыл выбрать). Раздача снова становится
+// загрузкой: .torrent возвращается из complete/ в папку накопителя, куски, которых касается новый файл, объявляются
+// нескачанными (остальные остаются), и обычный механизм докачки сам качает недостающее. Снять галочку с уже скачанного
+// файла нельзя (такие снятия игнорируются: файл остаётся на диске).
+static void reopen_complete(Item& it, const std::string& skipTxt, time_t now)
+{
+    (void)now;
+    const size_t nf = it.t.files.size();
+    std::vector<bool> req;
+    if (!sel_from_text(skipTxt, nf, req) || !sel_has_data(it.t, req)) { logf_("command select %s: bad selection '%s'", it.title.c_str(), skipTxt.c_str()); return; }
+    std::vector<bool> oldSel = it.fileSel.empty() ? std::vector<bool>(nf, true) : it.fileSel;
+    std::vector<bool> sel(nf, true);
+    bool added = false;
+    for (size_t k = 0; k < nf; k++) {
+        sel[k] = oldSel[k] || req[k];
+        if (sel[k] && !oldSel[k] && it.t.files[k].length > 0) added = true;
+    }
+    if (!added) { logf_("command select %s: finished task, no new files to download", it.title.c_str()); return; }
+
+    const uint32_t n = it.t.numPieces;
+    const uint64_t pl = it.t.pieceLength;
+    if (n == 0 || pl == 0) return;
+    // Что было скачано: все куски, кроме тех, что целиком принадлежат снятым файлам; потом убираем куски нового файла.
+    std::vector<bool> hv(n, true);
+    if (it.skipPiece.size() == n) for (uint32_t i = 0; i < n; i++) if (it.skipPiece[i]) hv[i] = false;
+    uint64_t off = 0;
+    for (size_t k = 0; k < nf; k++) {
+        uint64_t len = it.t.files[k].length;
+        if (len > 0 && !oldSel[k] && sel[k])
+            for (uint64_t p = off / pl; p <= (off + len - 1) / pl && p < n; p++) hv[p] = false;
+        off += len;
+    }
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < n; i++) if (hv[i]) cnt++;
+
+    // .torrent обратно в папку накопителя (иначе после перезапуска раздача снова появилась бы как завершённая)
+    std::string back = it.root + "/" + it.fileName;
+    if (it.path != back) {
+        struct stat sb;
+        if (stat(back.c_str(), &sb) == 0 || rename(it.path.c_str(), back.c_str()) != 0) {
+            logf_("command select %s: cannot move .torrent back from complete/ (errno %d), nothing changed", it.title.c_str(), errno);
+            return;
+        }
+        logf_("  moved .torrent back to %s", back.c_str());
+        it.path = back;
+    }
+    apply_selection(it, sel);
+    it.haveMap = hv;
+    it.haveValid = true;
+    it.have = cnt;
+    it.complete = false;
+    it.paused = false;
+    it.failed = false;
+    it.retryAt = 0;
+    it.notBefore = 0;
+    it.speedKB = 0;
+    it.peers = 0;
+    const std::string dir = it.stateDir(), h = it.t.infoHashHex, norm = sel_to_text(sel);
+    std::vector<uint32_t> rec;
+    writer_post([dir, h, n, hv, rec, norm]() { resume_save_at(dir, h, n, hv, rec); resume_save_sel_at(dir, h, norm); });
+    logf_("command: finished task %s reopened: %d of %d files selected, %u of %u pieces to download", it.title.c_str(),
+          (int)(nf - item_skipped_files(it)), (int)nf, (unsigned)(n - cnt), (unsigned)n);
+}
+
 // Список файлов задачи (для /api/files) и смена выбора файлов (для /api/select): выполняются в главном потоке.
 static void handle_files_cmd(const std::string& cmd, const std::string& arg, time_t now)
 {
@@ -3447,7 +3544,7 @@ static void handle_files_cmd(const std::string& cmd, const std::string& arg, tim
 
     // select
     if (!it) { logf_("command select: unknown hash %s", hash.c_str()); return; }
-    if (it->complete) { logf_("command select %s: a finished task cannot change its files", it->title.c_str()); return; }
+    if (it->complete) { reopen_complete(*it, rest, now); return; }
     std::vector<bool> sel;
     if (!sel_from_text(rest, it->t.files.size(), sel) || !sel_has_data(it->t, sel)) {
         logf_("command select %s: bad selection '%s'", it->title.c_str(), rest.c_str());
@@ -3999,6 +4096,7 @@ int main()
 
             memory_guard(now);
             run_downloads(now);
+            keep_awake(now);
             PHASE("downloads");
             if (g_active.empty()) usleep(20000);
 
