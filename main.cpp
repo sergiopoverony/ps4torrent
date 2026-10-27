@@ -62,6 +62,7 @@
 #include "writer.h"
 #include "bigbuf.h"
 #include "tracker.h"
+#include "upload.h"
 
 #ifndef USB_BASE
 #define USB_BASE "/mnt/usb"          // /mnt/usb0, /mnt/usb1, ...
@@ -319,6 +320,12 @@ struct Item {
     uint32_t skipCount;
     bool selPending;                    // смена выбора файлов ждёт, пока остановится загрузка и допишутся записи
     std::string selPendingTxt;
+    // Отдача
+    bool seeding = false;               // завершённая раздача сейчас сидируется (отдаётся пирам)
+    int upKB = 0;                       // текущая скорость отдачи этой раздачи, КБ/с
+    time_t seedPrio = 0;                // когда завершилась в этой сессии (свежие завершённые сидируются первыми)
+    time_t lastSeedEnd = 0;             // когда в последний раз закончили её сидировать (очередь по кругу)
+    time_t seedRetryAt = 0;             // не пытаться сидировать раньше (например, файлов нет на диске)
 
     Item() : paused(false), offline(false), complete(false), failed(false), running(false),
              haveValid(false), memPaused(false), have(0), checkPct(0), speedKB(0), peers(0), sessBytes(0), retryAt(0), notBefore(0), wantBytes(0), skipCount(0), selPending(false) {}
@@ -472,6 +479,8 @@ static void load_config()
     FILE* f = fopen(CONFIG_FILE, "r");
     if (!f) { logf_("config: no %s, using defaults", CONFIG_FILE); return; }
     char line[300];
+    bool cfgUpOn = false;
+    int cfgUpKB = UPLOAD_DEFAULT_KB;
     while (fgets(line, sizeof(line), f)) {
         std::string l = trim(line);
         if (l.empty() || l[0] == '#') continue;
@@ -493,9 +502,14 @@ static void load_config()
             g_saveTo = (val == "internal") ? 1 : 0;
         } else if (key == "resume_session") {
             g_resumeSession = !(val == "0" || val == "false" || val == "no" || val == "off");
+        } else if (key == "upload") {
+            cfgUpOn = (val == "1" || val == "true" || val == "yes" || val == "on");
+        } else if (key == "upload_kb") {
+            cfgUpKB = atoi(val.c_str());
         }
     }
     fclose(f);
+    upload_set(cfgUpOn, cfgUpKB);
 }
 
 // Настройки меняются через API, поэтому файл перезаписывается целиком.
@@ -505,6 +519,7 @@ static void save_config()
     if (!f) { logf_("cannot write %s", CONFIG_FILE); return; }
     fprintf(f, "# ps4torrentd settings (rewritten when changed through the web page / API)\n");
     fprintf(f, "max_parallel=%d\nlisten_port=%d\nautostart=%d\nsave_to=%s\nresume_session=%d\n", g_maxParallel, g_listenPort, g_autostart ? 1 : 0, g_saveTo.load() == 1 ? "internal" : "usb", g_resumeSession.load() ? 1 : 0);
+    fprintf(f, "upload=%d\nupload_kb=%d\n", upload_enabled() ? 1 : 0, upload_limit_kb());
     if (!g_token.empty()) fprintf(f, "web_token=%s\n", g_token.c_str());
     fclose(f);
 }
@@ -540,6 +555,9 @@ struct Job {
 };
 
 static std::vector<Job*> g_active;
+static std::vector<Job*> g_seeds;       // завершённые раздачи, которые сейчас отдаются пирам (не больше SEED_MAX)
+static void close_seed(Job* j, time_t now, const char* why);
+static void close_all_seeds(time_t now, const char* why);
 // Раздачи, которые уже остановлены, но поток записи ещё дописывает их проверенные куски на диск (флешка бывает
 // очень медленной или зависшей). Сеть у них закрыта; пока запись идёт, Storage освобождать нельзя (с ним работает
 // поток записи). Главный цикл по мере готовности завершает куски и дописывает файл прогресса: остановка ничего не ждёт.
@@ -631,6 +649,9 @@ static void close_job(Job* j, time_t now, bool userStop);
 
 static void stop_job_for(Item* it, time_t now)
 {
+    for (size_t i = 0; i < g_seeds.size(); i++) {
+        if (g_seeds[i]->it == it) { close_seed(g_seeds[i], now, "task changed"); break; }
+    }
     for (size_t i = 0; i < g_active.size(); i++) {
         if (g_active[i]->it == it) { close_job(g_active[i], now, true); return; }
     }
@@ -648,7 +669,7 @@ static void finish_item(Item& it, bool announce)
     it.failed = false;
     logf_("  COMPLETE: %s", it.t.name.c_str());
 
-    if (announce) notify("Torrent done: %s", cut_utf8(it.title, 110).c_str());
+    if (announce) { notify("Torrent done: %s", cut_utf8(it.title, 110).c_str()); it.seedPrio = time(NULL); }
 
     make_dirs(it.doneDir());
     std::string dest = it.doneDir() + "/" + it.fileName;
@@ -1005,6 +1026,10 @@ static int adopt_incoming(const unsigned char infoHash[20], int fd, const std::s
         Job* j = g_active[i];
         if (j->sw && memcmp(j->it->t.infoHash, infoHash, 20) == 0) return j->sw->adopt(fd, key, initial);
     }
+    for (size_t i = 0; i < g_seeds.size(); i++) {
+        Job* j = g_seeds[i];
+        if (j->sw && memcmp(j->it->t.infoHash, infoHash, 20) == 0) return j->sw->adopt(fd, key, initial);
+    }
     return 0;
 }
 
@@ -1097,6 +1122,7 @@ static void memory_guard(time_t now)
     const long long low = (long long)MEM_LOW_MB << 20, drop = (long long)MEM_DROP_MB << 20;
     bool pressure = ev || (f >= 0 && f < low && g_memPeak - f >= drop);
     if (pressure) {
+        close_all_seeds(now, "low memory");               // сначала отдача: она нужна меньше всего
         g_memOkSince = 0;
         if (now - g_memLastPause < MEM_PAUSE_GAP_S) return;
         // Нехватка памяти внутри самой программы (bad_alloc): соединения уже сброшены, и последнюю загрузку из-за этого не останавливаем
@@ -1153,6 +1179,131 @@ static void memory_guard(time_t now)
     }
 }
 
+// ---------------------------------------------------------------- сидирование завершённых раздач
+// Если отдача включена, завершённые раздачи отдаются пирам (до SEED_MAX одновременно: у каждой свои соединения и опрос трекера).
+// Первыми идут завершившиеся в этой сессии, остальные по кругу: каждая отдаётся не дольше SEED_ROTATE_S, если ждут другие.
+#ifndef SEED_MAX
+#define SEED_MAX 3
+#endif
+#ifndef SEED_ROTATE_S
+#define SEED_ROTATE_S 1800
+#endif
+#ifndef SEED_CONNS
+#define SEED_CONNS 6
+#endif
+
+static void close_seed(Job* j, time_t now, const char* why)
+{
+    Item* it = j->it;
+    if (it) {
+        logf_("  seeding stopped: %s (%s), uploaded %llu KB", it->title.c_str(), why,
+              (unsigned long long)(j->sw ? j->sw->status().upBytes / 1024 : 0));
+        it->seeding = false;
+        it->upKB = 0;
+        it->lastSeedEnd = now;
+    }
+    for (size_t i = 0; i < g_seeds.size(); i++)
+        if (g_seeds[i] == j) { g_seeds.erase(g_seeds.begin() + i); break; }
+    delete j;
+}
+
+static void close_all_seeds(time_t now, const char* why)
+{
+    while (!g_seeds.empty()) close_seed(g_seeds.back(), now, why);
+}
+
+// Файлы раздачи на месте? (проверяем несколько первых выбранных файлов, чтобы не сидировать то, чего нет на диске)
+static bool seed_files_present(const Item& it)
+{
+    int checked = 0;
+    for (size_t k = 0; k < it.t.files.size() && checked < 3; k++) {
+        if (it.t.files[k].length == 0) continue;
+        if (!it.fileSel.empty() && k < it.fileSel.size() && !it.fileSel[k]) continue;
+        struct stat sb;
+        std::string full = it.dlDir() + "/" + it.t.files[k].path;
+        if (stat(full.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) || (uint64_t)sb.st_size < it.t.files[k].length) return false;
+        checked++;
+    }
+    return checked > 0;
+}
+
+static bool start_seed(Item& it, time_t now)
+{
+    if (!seed_files_present(it)) {
+        logf_("seeding skipped, files are not on the drive: %s", it.title.c_str());
+        it.seedRetryAt = now + 3600;
+        return false;
+    }
+    Job* j = new Job(&it);
+    std::string err;
+    if (!it.fileSel.empty()) {
+        std::vector<bool> sk(it.fileSel.size());
+        for (size_t k = 0; k < sk.size(); k++) sk[k] = !it.fileSel[k];
+        j->st.set_skip_files(sk);
+    }
+    if (!j->st.open(it.t, it.dlDir(), err)) {
+        logf_("seeding skipped, storage failed: %s", err.c_str());
+        it.seedRetryAt = now + 600;
+        delete j;
+        return false;
+    }
+    const uint32_t n = it.t.numPieces;
+    j->ds.have.assign(n, true);
+    if (it.skipPiece.size() == n) for (uint32_t i = 0; i < n; i++) if (it.skipPiece[i]) j->ds.have[i] = false;
+    j->ds.haveCount = count_have(j->ds.have);
+    j->ds.skip = it.skipPiece;
+    ds_recount(j->ds, n);
+    j->sw = new Swarm(it.t, j->st, j->ds, g_peerId, true);
+    j->sw->set_max_conns(SEED_CONNS);
+    j->t0 = now;
+    g_seeds.push_back(j);
+    it.seeding = true;
+    it.upKB = 0;
+    logf_("seeding: %s (%u pieces)", it.title.c_str(), (unsigned)n);
+    return true;
+}
+
+static Item* pick_seed_candidate(time_t now)
+{
+    Item* best = NULL;
+    for (size_t i = 0; i < g_items.size(); i++) {
+        Item* it = g_items[i];
+        if (!it->complete || it->offline || it->seeding || now < it->seedRetryAt || it->selPending) continue;
+        if (!best) { best = it; continue; }
+        if (it->seedPrio != best->seedPrio) { if (it->seedPrio > best->seedPrio) best = it; continue; }
+        if (it->lastSeedEnd < best->lastSeedEnd) best = it;
+    }
+    return best;
+}
+
+static void manage_seeds(time_t now)
+{
+    static time_t last = 0;
+    if (now == last) return;
+    last = now;
+    const bool memHold = !g_memStack.empty() || (g_memEventAt != 0 && now - g_memEventAt < MEM_EVENT_HOLD_S);
+    if (!upload_enabled() || memHold) {
+        if (!g_seeds.empty()) close_all_seeds(now, !upload_enabled() ? "upload is off" : "low memory");
+        return;
+    }
+    for (size_t i = g_seeds.size(); i > 0; i--) {
+        Job* j = g_seeds[i - 1];
+        Item* it = j->it;
+        const char* why = NULL;
+        if (!it->complete) why = "task is not complete";
+        else if (it->offline) why = "drive removed";
+        else if (now % 15 == 0 && !seed_files_present(*it)) { why = "files are not on the drive any more"; it->seedRetryAt = now + 600; }
+        else if (j->sw->finished()) why = j->sw->reason();
+        else if (now - j->t0 >= SEED_ROTATE_S && pick_seed_candidate(now)) why = "turn passes to another task";
+        if (why) close_seed(j, now, why);
+    }
+    while ((int)g_seeds.size() < SEED_MAX) {
+        Item* it = pick_seed_candidate(now);
+        if (!it) break;
+        if (!start_seed(*it, now)) continue;              // не вышло: seedRetryAt уже выставлен, берём следующего
+    }
+}
+
 // Один проход общего цикла загрузок. Внутри один select() на все раздачи (он же служит паузой).
 static void run_downloads(time_t now)
 {
@@ -1174,7 +1325,7 @@ static void run_downloads(time_t now)
         start_job(it, now);
         if (!it.running) it.failed = true;      // не удалось открыть файлы: повтор через retryAt
     }
-    if (g_active.empty()) return;
+    if (g_active.empty() && g_seeds.empty()) return;
 
     // 3. Соединения делим между раздачами.
     int nDown = 0;
@@ -1195,6 +1346,11 @@ static void run_downloads(time_t now)
         } else {
             checking = true;
         }
+    }
+    for (size_t i = 0; i < g_seeds.size(); i++) {
+        Job* j = g_seeds[i];
+        int m = j->sw->prepare(now, rf, wf);
+        if (m > maxfd) maxfd = m;
     }
 
     int im = incoming_prepare(rf);
@@ -1227,6 +1383,7 @@ static void run_downloads(time_t now)
             it.have = st.haveCount;
             it.peers = st.sending;          // на экране только те пиры, которые реально присылают данные
             it.speedKB = st.speedKB;
+            it.upKB = st.upKB;
             it.sessBytes = st.totalBytes;
             if (j->sw->finished()) ending.push_back(j);
             else if (now - j->lastSave >= 20) {
@@ -1266,6 +1423,13 @@ static void run_downloads(time_t now)
         } else if (j->ds.needLeft == 0 && !j->sw) {
             ending.push_back(j);
         }
+    }
+    for (size_t i = g_seeds.size(); i > 0; i--) {
+        Job* j = g_seeds[i - 1];
+        j->sw->process(now, rf, wf);
+        SwarmStatus st = j->sw->status();
+        connsSum += st.peers;
+        j->it->upKB = st.upKB;
     }
     g_connsTotal = connsSum;
     for (size_t i = 0; i < ending.size(); i++) close_job(ending[i], now, false);
@@ -1480,6 +1644,7 @@ static void add_item(const std::string& root, const std::string& fileName, bool 
         // Тот же .torrent положили заново (например, чтобы перекачать): старую запись забываем.
         logf_("re-added finished torrent, starting over: %s", old->title.c_str());
         resume_save_sel_at(old->stateDir(), old->t.infoHashHex, "");        // прежний выбор файлов не должен действовать на новую загрузку
+        stop_job_for(old, time(NULL));                                      // если она сидировалась: остановить
         for (size_t i = 0; i < g_items.size(); i++)
             if (g_items[i] == old) { g_items.erase(g_items.begin() + i); break; }
         retire_item(old);
@@ -1984,13 +2149,13 @@ static void build_snapshot()
             eta = secs > 8640000.0 ? 8640000LL : (long long)secs;   // не больше 100 суток
         }
 
-        char buf[480];
+        char buf[560];
         snprintf(buf, sizeof(buf),
                  "%s{\"hash\":\"%s\",\"status\":\"%s\",\"size\":%llu,\"done\":%llu,\"pct\":%d,"
-                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"mem_paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"root\":\"",
+                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"mem_paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"seeding\":%s,\"up_kb\":%d,\"root\":\"",
                  i ? "," : "", it.t.infoHashHex.c_str(), status_name(it),
                  (unsigned long long)item_size_bytes(it), (unsigned long long)done, pct,
-                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", it.memPaused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it));
+                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", it.memPaused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it), it.seeding ? "true" : "false", it.upKB);
         j += buf;
         j += json_escape(it.root) + "\",\"title\":\"" + json_escape(it.title) + "\"}";
     }
@@ -2002,9 +2167,9 @@ static void build_snapshot()
     j += g_drivesJson;
     j += "],\"mounts\":[";
     j += g_mountsJson;
-    char tail[320];
-    snprintf(tail, sizeof(tail), "],\"speed_kb\":%d,\"max_parallel\":%d,\"listen_port\":%d,\"incoming\":%u,"
-             "\"deleting\":%d,\"net_ip\":\"%s\",\"net_restarts\":%d,\"net_heals\":%d,\"buf_kb\":%llu,\"version\":\"%s\"}", totalSpeed, g_maxParallel,
+    char tail[360];
+    snprintf(tail, sizeof(tail), "],\"speed_kb\":%d,\"up_kb\":%d,\"upload\":%s,\"max_parallel\":%d,\"listen_port\":%d,\"incoming\":%u,"
+             "\"deleting\":%d,\"net_ip\":\"%s\",\"net_restarts\":%d,\"net_heals\":%d,\"buf_kb\":%llu,\"version\":\"%s\"}", totalSpeed, upload_speed_kb(), upload_enabled() ? "true" : "false", g_maxParallel,
              incoming_port(), incoming_accepted(), (int)g_delJobs.size(), g_netIp.c_str(), g_netRestarts, g_httpHeals.load(), (unsigned long long)(bigbuf_total().load() >> 10), APP_VERSION);
     j += tail;
 #ifdef HOST_TEST
@@ -2014,10 +2179,11 @@ static void build_snapshot()
     }
 #endif
 
-    char cfgBuf[300];
-    snprintf(cfgBuf, sizeof(cfgBuf), "{\"max_parallel\":%d,\"listen_port\":%d,\"listening\":%s,\"token_set\":%s,\"autostart\":%s,\"save_to\":\"%s\",\"resume_session\":%s,\"http_port\":%d,\"version\":\"%s\"}",
+    char cfgBuf[360];
+    snprintf(cfgBuf, sizeof(cfgBuf), "{\"max_parallel\":%d,\"listen_port\":%d,\"listening\":%s,\"token_set\":%s,\"autostart\":%s,\"save_to\":\"%s\",\"resume_session\":%s,\"upload\":%s,\"upload_kb\":%d,\"http_port\":%d,\"version\":\"%s\"}",
              g_maxParallel, g_listenPort, incoming_port() ? "true" : "false", g_token.empty() ? "false" : "true",
-             g_autostart ? "true" : "false", g_saveTo.load() == 1 ? "internal" : "usb", g_resumeSession.load() ? "true" : "false", HTTP_PORT, APP_VERSION);
+             g_autostart ? "true" : "false", g_saveTo.load() == 1 ? "internal" : "usb", g_resumeSession.load() ? "true" : "false",
+             upload_enabled() ? "true" : "false", upload_limit_kb(), HTTP_PORT, APP_VERSION);
     std::string cfg = cfgBuf;
 
     pthread_mutex_lock(&g_mu);
@@ -2085,6 +2251,8 @@ button:disabled{opacity:.55;cursor:default}
 <label><span data-i18n="cfg_port">listen port (0 = off)</span> <input id="lp" type="number" min="0" max="65535"></label>
 <label><input id="as" type="checkbox" style="width:auto"> <span data-i18n="cfg_autostart">start tasks automatically</span></label>
 <label><input id="rs" type="checkbox" style="width:auto"> <span data-i18n="cfg_resume">resume interrupted downloads after a restart</span></label>
+<label><input id="ul" type="checkbox" style="width:auto"> <span data-i18n="cfg_upload">upload to other peers (seeding)</span></label>
+<label><span data-i18n="cfg_upload_kb">upload speed limit</span> <select id="ulk"></select></label>
 <label><span data-i18n="cfg_language">language</span> <select id="lng"></select></label>
 <button id="cfgs" data-i18n="cfg_save">save</button> <span class="mut" id="cfgi"></span></div>
 <div id="dlg" class="ov"><div class="dl c">
@@ -2238,8 +2406,9 @@ function row(i){
   var fsel = i.nskip ? '<span class="s">' + E(T('row_files', i.nfiles - i.nskip, i.nfiles)) + '</span>' : '';
   var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">' + E(T('row_low_space')) + '</span>' : '';
   var stText = (i.status === 'paused' && i.mem_paused) ? T('st_mem_paused') : T('st_' + i.status);
+  var seedb = i.seeding ? '<span class="s" style="color:var(--ok);border-color:var(--ok)">' + E(T('row_seeding')) + '</span>' : '';
   return '<div class="c ' + i.status + '"><div class="t">' + E(i.title) + '</div><div class="r">'
-    + '<span class="s">' + E(stText) + '</span>' + fsel + low + '<div class="bar"><i data-lv="bar:' + i.hash + '" style="width:' + liveBar(i) + '%"></i></div>'
+    + '<span class="s">' + E(stText) + '</span>' + seedb + fsel + low + '<div class="bar"><i data-lv="bar:' + i.hash + '" style="width:' + liveBar(i) + '%"></i></div>'
     + '<span data-lv="pct:' + i.hash + '">' + E(T('row_pct', livePct(i), sz(i.size))) + '</span>'
     + '<span class="mut" data-lv="spd:' + i.hash + '">' + E(liveSpeedText(i)) + '</span>' + b + '</div></div>';
 }
@@ -2322,7 +2491,7 @@ function load(force){
     live._all = { tgt: d.speed_kb, sp: (la && d.speed_kb > 0 && lt !== la.at) ? la.sp : d.speed_kb, at: lt };
     var dr = d.drives.map(function(x){ return T('s_free', driveName(x), sz(x.free)); }).join(' | ')
       || (d.items.length ? T('s_nodrive') : T('s_nostorage'));
-    sumRest = ' | ' + dr + ' | ' + (d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_incoming_off'))
+    sumRest = (d.upload ? ' | ' + T('s_upload', d.up_kb) : '') + ' | ' + dr + ' | ' + (d.listen_port ? T('s_incoming_on', d.incoming, d.listen_port) : T('s_incoming_off'))
       + (d.deleting ? ' | ' + T('s_deleting') : '');
     renderSum();
     $('ft').textContent = 'ps4torrent v' + d.version + ' Created by SergioPoverony and Mr.Claude';
@@ -2654,19 +2823,32 @@ $('dgo').onclick = function(){
 $('allgo').onclick = function(){ api('/api/resume_all').then(function(){ load(); }); };
 $('allstop').onclick = function(){ api('/api/pause_all').then(function(){ load(); }); };
 
+// Скорость отдачи: семь ступеней
+var UL_STEPS = [24, 32, 64, 128, 256, 512, 1024];
+function ulText(v){ return v >= 1024 ? T('u_mbs', v / 1024) : T('u_kbs', v); }
+function fillUpload(c){
+  var sel = $('ulk');
+  sel.innerHTML = UL_STEPS.map(function(v){ return '<option value="' + v + '">' + E(ulText(v)) + '</option>'; }).join('');
+  sel.value = String(c.upload_kb || 32);
+  $('ul').checked = !!c.upload;
+  sel.disabled = !$('ul').checked;
+}
+$('ul').onchange = function(){ $('ulk').disabled = !$('ul').checked; };
+
 // Настройки
 $('cfgb').onclick = function(){
   var p = $('cfg');
   if (p.style.display === 'block') { p.style.display = 'none'; return; }
   api('/api/config').then(function(r){ return r.json(); }).then(function(c){
     $('mp').value = c.max_parallel; $('lp').value = c.listen_port; $('as').checked = !!c.autostart; $('rs').checked = c.resume_session !== false;
+    fillUpload(c);
     $('cfgi').textContent = T('cfg_version', c.version);
     fillLangSelect();
     p.style.display = 'block';
   });
 };
 $('cfgs').onclick = function(){
-  api('/api/set?max_parallel=' + encodeURIComponent($('mp').value) + '&listen_port=' + encodeURIComponent($('lp').value) + '&autostart=' + ($('as').checked ? 1 : 0) + '&resume_session=' + ($('rs').checked ? 1 : 0))
+  api('/api/set?max_parallel=' + encodeURIComponent($('mp').value) + '&listen_port=' + encodeURIComponent($('lp').value) + '&autostart=' + ($('as').checked ? 1 : 0) + '&resume_session=' + ($('rs').checked ? 1 : 0) + '&upload=' + ($('ul').checked ? 1 : 0) + '&upload_kb=' + encodeURIComponent($('ulk').value))
     .then(function(r){ return r.json(); }).then(function(d){ say(d.ok ? T('saved') : (d.error || T('failed')), !d.ok); setTimeout(load, 1500); });
 };
 $('lng').onchange = function(){
@@ -3091,8 +3273,19 @@ static void handle_client(int c)
         respond(c, "application/json", "{\"ok\":true}");
     } else if (path == "/api/set") {
         std::string mp = qget(query, "max_parallel"), lp = qget(query, "listen_port"), as = qget(query, "autostart"),
-                    sv = qget(query, "save_to"), rsv = qget(query, "resume_session"), arg;
-        if (mp.empty() && lp.empty() && as.empty() && sv.empty() && rsv.empty()) { respond_json_error(c, 400, "Bad Request", "nothing to change"); return; }
+                    sv = qget(query, "save_to"), rsv = qget(query, "resume_session"), upv = qget(query, "upload"), upk = qget(query, "upload_kb"), arg;
+        if (mp.empty() && lp.empty() && as.empty() && sv.empty() && rsv.empty() && upv.empty() && upk.empty()) { respond_json_error(c, 400, "Bad Request", "nothing to change"); return; }
+        if (!upv.empty()) {
+            if (upv != "0" && upv != "1") { respond_json_error(c, 400, "Bad Request", "upload must be 0 or 1"); return; }
+            arg += "upload=" + upv + "&";
+        }
+        if (!upk.empty()) {
+            int v = atoi(upk.c_str());
+            bool okStep = false;
+            for (int k = 0; k < 7; k++) if (UPLOAD_STEPS[k] == v) okStep = true;
+            if (!okStep) { respond_json_error(c, 400, "Bad Request", "upload_kb must be one of 24, 32, 64, 128, 256, 512, 1024"); return; }
+            arg += "upload_kb=" + std::to_string(v) + "&";
+        }
         if (!rsv.empty()) {
             if (rsv != "0" && rsv != "1") { respond_json_error(c, 400, "Bad Request", "resume_session must be 0 or 1"); return; }
             arg += "resume_session=" + rsv + "&";
@@ -3365,6 +3558,13 @@ static bool http_spawn()
 static void apply_set(const std::string& arg)
 {
     std::string mp = qget(arg, "max_parallel"), lp = qget(arg, "listen_port"), as = qget(arg, "autostart"), sv = qget(arg, "save_to"), rsv = qget(arg, "resume_session");
+    std::string upv = qget(arg, "upload"), upk = qget(arg, "upload_kb");
+    if (!upv.empty() || !upk.empty()) {
+        bool on = upv.empty() ? upload_enabled() : (upv == "1");
+        int kb = upk.empty() ? upload_limit_kb() : atoi(upk.c_str());
+        upload_set(on, kb);
+        logf_("settings: upload=%d, limit %d KB/s", upload_enabled() ? 1 : 0, upload_limit_kb());
+    }
     if (!rsv.empty()) { g_resumeSession = (rsv == "1"); logf_("settings: resume_session=%s", rsv.c_str()); }
     if (!sv.empty()) {
         g_saveTo = (sv == "internal") ? 1 : 0;
@@ -3453,7 +3653,7 @@ static void try_apply_selection(Item& it, time_t now)
 // файла нельзя (такие снятия игнорируются: файл остаётся на диске).
 static void reopen_complete(Item& it, const std::string& skipTxt, time_t now)
 {
-    (void)now;
+    stop_job_for(&it, now);                               // если раздача сейчас сидируется: остановить
     const size_t nf = it.t.files.size();
     std::vector<bool> req;
     if (!sel_from_text(skipTxt, nf, req) || !sel_has_data(it.t, req)) { logf_("command select %s: bad selection '%s'", it.title.c_str(), skipTxt.c_str()); return; }
@@ -3623,6 +3823,7 @@ static void recover_after_pause(bool closeFiles)
         g_rescan = true;
         logf_("after the pause the process is: %s", process_identity().c_str());       // сравнить с запуском: не изменились ли права
     }
+    close_all_seeds(time(NULL), "network or drive changed");        // отдача перезапустится сама через секунду (файлы и трекер заново)
     int files = 0, swarms = 0;
     for (size_t i = 0; i < g_active.size(); i++) {
         if (closeFiles) { int c = g_active[i]->st.close_all_fds(); if (c > 0) files += c; }   // -1: идёт запись, файл не трогаем
@@ -4095,10 +4296,12 @@ int main()
             PHASE("scan_usb");
 
             memory_guard(now);
+            upload_tick();
+            manage_seeds(now);
             run_downloads(now);
             keep_awake(now);
             PHASE("downloads");
-            if (g_active.empty()) usleep(20000);
+            if (g_active.empty() && g_seeds.empty()) usleep(20000);
 
             // Состояние обновляем раз в секунду и сразу после любой команды.
             if (ncmd > 0 || now != lastSnap) {
@@ -4147,6 +4350,7 @@ int main()
             oomCount++;
             g_memEvent = true;
             logf_("!!! OUT OF MEMORY (std::bad_alloc) #%d: all peer connections are dropped to free memory, the program continues", oomCount);
+            close_all_seeds(time(NULL), "out of memory");
             for (size_t i = 0; i < g_active.size(); i++) if (g_active[i]->sw) g_active[i]->sw->trim_memory();
             if (oomCount == 1) notify("ps4torrent: low memory, peer connections were reset");
             if (oomCount >= 5) {
@@ -4166,6 +4370,7 @@ int main()
 
     // Остановка: сохраняем прогресс и закрываем файлы.
     time_t now = time(NULL);
+    close_all_seeds(now, "shutdown");
     while (!g_active.empty()) close_job(g_active.back(), now, true);
     session_sync(time(NULL), true);      // что качалось на момент остановки (запись идёт через поток записи)
     // Дать дописать уже проверенные куски на диск (до 8 секунд), чтобы они не пропали при остановке.

@@ -45,6 +45,7 @@ bool api_refresh_status()
         x.lowSpace = it["low_space"].asBool(false);
         x.nfiles = (int)it["nfiles"].asInt(0);
         x.nskip = (int)it["nskip"].asInt(0);
+        x.seeding = it["seeding"].asBool(false);
         x.root = it["root"].asStr();
         x.title = it["title"].asStr();
         if (x.hash.empty()) continue;   // битая запись: пропускаем, а не падаем
@@ -64,6 +65,8 @@ bool api_refresh_status()
     }
 
     st.totalSpeedKB = (int)j["speed_kb"].asInt(0);
+    st.upKB = (int)j["up_kb"].asInt(0);
+    st.upload = j["upload"].asBool(false);
     st.maxParallel = (int)j["max_parallel"].asInt(0);
     st.listenPort = (int)j["listen_port"].asInt(0);
     st.incoming = (unsigned)j["incoming"].asInt(0);
