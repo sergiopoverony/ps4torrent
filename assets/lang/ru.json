@@ -163,6 +163,17 @@
 "u_mbs": "{0} МБ/с",
 "s_upload": "отдача {0} КБ/с",
 "row_seeding": "раздаётся",
+"dlg_title_url": "Загрузка по ссылке",
+"btn_add_url": "+ ссылка",
+"url_prompt": "Прямая ссылка http:// на файл или на .torrent:",
+"url_checking": "Проверяю ссылку...",
+"url_dup": "Эта ссылка уже есть в списке",
+"url_badtorrent": "По ссылке повреждённый .torrent",
+"dlg_size_unknown": "размер неизвестен",
+"row_link": "ссылка",
+"row_speed_http": "{0} КБ/с",
+"st_error": "ошибка",
+"tc_st_error": "ошибка",
 "tc_upload": "отдача",
 "tc_seeding": "раздаётся"
 }

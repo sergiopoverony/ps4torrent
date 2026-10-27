@@ -6,8 +6,8 @@ const dir = '/tmp/daemon/ps4torrentd/assets/lang/';
 const results = []; const ok = (c, m) => { results.push(c); console.log((c ? 'PASS ' : 'FAIL ') + m); };
 const GB = 1024 ** 3;
 let nowMs = 1e6; const timers = [];
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb']
-  .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk']
+  .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
 // живые элементы списка: разбираем data-lv из текущего innerHTML
 let live = [];
 els.m.querySelectorAll = () => {
@@ -28,7 +28,7 @@ const ctx = { document:{ getElementById:id=>els[id], querySelectorAll:()=>[] }, 
   setTimeout:(f)=>{ f && f(); return 0; }, clearTimeout:()=>{}, setInterval:(f, ms)=>{ timers.push({ f, ms }); return timers.length; }, Date:{ now:()=>nowMs },
   encodeURIComponent, decodeURIComponent, Array, String, Math, Promise, Error, parseInt, TextDecoder, Uint8Array, FileReader: function(){},
   fetch:(url)=>{
-    if (url.startsWith('/lang/')) { const nm = url.slice(6);
+    if (url.startsWith('/lang/')) { const nm = url.slice(6).split('?')[0];
       const body = nm === 'index.json' ? fs.readdirSync(dir).filter(x => x.endsWith('.json')).map(x => ({ code: x.slice(0, -5), name: JSON.parse(fs.readFileSync(dir + x, 'utf8'))._name })) : JSON.parse(fs.readFileSync(dir + nm, 'utf8'));
       return Promise.resolve({ ok:true, status:200, json:()=>Promise.resolve(body) }); }
     const body = url.startsWith('/status') ? JSON.parse(JSON.stringify(status)) : { ok:true };

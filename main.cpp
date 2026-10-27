@@ -63,6 +63,7 @@
 #include "bigbuf.h"
 #include "tracker.h"
 #include "upload.h"
+#include "direct.h"
 
 #ifndef USB_BASE
 #define USB_BASE "/mnt/usb"          // /mnt/usb0, /mnt/usb1, ...
@@ -1074,6 +1075,7 @@ static void keep_awake(time_t now)
     if (now - last < KEEP_AWAKE_S) return;
     bool busy = false;
     for (size_t k = 0; k < g_items.size(); k++) if (g_items[k]->running) { busy = true; break; }
+    if (direct_running()) busy = true;
     if (!busy) return;
     last = now;
     calls++;
@@ -2159,6 +2161,10 @@ static void build_snapshot()
         j += buf;
         j += json_escape(it.root) + "\",\"title\":\"" + json_escape(it.title) + "\"}";
     }
+    {
+        std::string dj = direct_items_json(totalSpeed);
+        if (!dj.empty()) j += (g_items.empty() ? "" : ",") + dj;
+    }
     std::map<std::string, std::string> dupNow;
     for (size_t i = 0; i < g_items.size(); i++)
         if (!g_items[i]->complete && !g_items[i]->offline) dupNow[g_items[i]->t.infoHashHex] = g_items[i]->title;
@@ -2216,6 +2222,7 @@ button,.btn{background:transparent;color:var(--ac);border:1px solid var(--ac);bo
 .go{color:var(--ok);border-color:var(--ok)}
 .s{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid var(--mut);color:var(--mut)}
 .offline .s,.waiting .s{color:var(--wr);border-color:var(--wr)}
+.error .s{color:var(--er);border-color:var(--er)}.rerr{color:var(--er);font-size:13px;word-break:break-word}
 .warn{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:rgba(248,81,73,.14);color:var(--er);display:none;font-size:14px}
 .ov{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}
 .dl{max-width:540px;width:92%;max-height:86vh;overflow:auto;box-sizing:border-box}
@@ -2242,6 +2249,7 @@ button:disabled{opacity:.55;cursor:default}
 </style></head><body>
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
+<button id="urlb" data-i18n="btn_add_url">+ link</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
 <button id="cfgb" data-i18n="btn_settings">settings</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
@@ -2393,7 +2401,8 @@ function liveFrac(i){ var L = live[i.hash]; return (L && i.status === 'downloadi
 function livePct(i){ var p = Math.floor(liveFrac(i)); return (i.status === 'complete') ? 100 : (i.status === 'downloading' && p > 99 ? 99 : p); }
 function liveBar(i){ return Math.round(liveFrac(i) * 10) / 10; }
 function liveEta(i){ var L = live[i.hash]; if (!L || i.eta_s < 0) return i.eta_s; return Math.max(1, Math.round(L.eta - (Date.now() - L.polled) / 1000)); }
-function liveSpeedText(i){ return T('row_speed', liveSpeed(i), i.peers) + (i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : ''); }
+function pctText(i){ return (i.kind === 'http' && !i.size_known) ? sz(i.done) : T('row_pct', livePct(i), sz(i.size)); }
+function liveSpeedText(i){ return (i.kind === 'http' ? T('row_speed_http', liveSpeed(i)) : T('row_speed', liveSpeed(i), i.peers)) + (i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : ''); }
 
 function row(i){
   var b = '';
@@ -2406,11 +2415,13 @@ function row(i){
   var fsel = i.nskip ? '<span class="s">' + E(T('row_files', i.nfiles - i.nskip, i.nfiles)) + '</span>' : '';
   var low = i.low_space ? '<span class="s" style="color:var(--er);border-color:var(--er)">' + E(T('row_low_space')) + '</span>' : '';
   var stText = (i.status === 'paused' && i.mem_paused) ? T('st_mem_paused') : T('st_' + i.status);
+  var lnk = i.kind === 'http' ? '<span class="s">' + E(T('row_link')) + '</span>' : '';
+  var errl = (i.kind === 'http' && i.error) ? '<div class="rerr">' + E(i.error) + '</div>' : '';
   var seedb = i.seeding ? '<span class="s" style="color:var(--ok);border-color:var(--ok)">' + E(T('row_seeding')) + '</span>' : '';
   return '<div class="c ' + i.status + '"><div class="t">' + E(i.title) + '</div><div class="r">'
-    + '<span class="s">' + E(stText) + '</span>' + seedb + fsel + low + '<div class="bar"><i data-lv="bar:' + i.hash + '" style="width:' + liveBar(i) + '%"></i></div>'
-    + '<span data-lv="pct:' + i.hash + '">' + E(T('row_pct', livePct(i), sz(i.size))) + '</span>'
-    + '<span class="mut" data-lv="spd:' + i.hash + '">' + E(liveSpeedText(i)) + '</span>' + b + '</div></div>';
+    + '<span class="s">' + E(stText) + '</span>' + lnk + seedb + fsel + low + '<div class="bar"><i data-lv="bar:' + i.hash + '" style="width:' + liveBar(i) + '%"></i></div>'
+    + '<span data-lv="pct:' + i.hash + '">' + E(pctText(i)) + '</span>'
+    + '<span class="mut" data-lv="spd:' + i.hash + '">' + E(liveSpeedText(i)) + '</span>' + b + '</div>' + errl + '</div>';
 }
 
 function paint(){
@@ -2475,7 +2486,7 @@ function animate(){
     var a = (els[k].getAttribute('data-lv') || '').split(':'), i = byHash[a[1]];
     if (!i) continue;
     if (a[0] === 'bar') els[k].style.width = liveBar(i) + '%';
-    else if (a[0] === 'pct') els[k].textContent = T('row_pct', livePct(i), sz(i.size));
+    else if (a[0] === 'pct') els[k].textContent = pctText(i);
     else if (a[0] === 'spd') els[k].textContent = liveSpeedText(i);
   }
 }
@@ -2616,7 +2627,9 @@ function updateDlg(){
 
 function openDialog(files){
   dlgFiles = files;
+  $('dlg').querySelector('h2').textContent = (files.length === 1 && files[0].url) ? T('dlg_title_url') : T('dlg_title');
   $('dfiles').innerHTML = files.map(function(f){
+    if (f.url) return '<div class="f">' + E(f.info.name) + ' <span class="mut">(' + (f.sizeKnown ? sz(f.info.size) : E(T('dlg_size_unknown'))) + ')</span><div class="mut" style="word-break:break-all">' + E(f.url) + '</div></div>';
     return '<div class="f">' + (f.info ? E(f.info.name) + ' <span class="mut">(' + sz(f.info.size) + (f.info.files.length > 1 ? T('dlg_files_n', f.info.files.length) : '') + ')</span>'
       : E(f.name) + ' <span style="color:var(--er)">' + E(T('dlg_invalid')) + '</span>') + '</div>';
   }).join('');
@@ -2806,6 +2819,16 @@ function doUpload(files, drive, start, label){
 }
 
 $('dgo').onclick = function(){
+  if (dlgFiles.length === 1 && dlgFiles[0].url) {                  // прямая загрузка по ссылке
+    var u = dlgFiles[0], us = $('dsel'), ud = us.value, ust = $('dstart').checked ? 1 : 0;
+    var ul = us.options[us.selectedIndex] ? us.options[us.selectedIndex].text.split(' - ')[0] : ud;
+    closeDialog();
+    api('/api/add_url?url=' + encodeURIComponent(u.url) + '&name=' + encodeURIComponent(u.info.name) + '&size=' + u.info.size + '&size_known=' + (u.sizeKnown ? 1 : 0)
+        + '&drive=' + encodeURIComponent(ud) + '&start=' + ust).then(function(r){ return r.json(); })
+      .then(function(d){ say(!d.ok ? (d.error || T('failed')) : (d.duplicate ? T('url_dup') : T('add_ok', u.info.name, ul) + (ust ? T('add_started') : T('add_notstarted'))), !d.ok || d.duplicate); load(true); })
+      .catch(function(){ say(T('noanswer'), true); });
+    return;
+  }
   var valid = dlgFiles.filter(function(f){ return f.info && f.data; });
   if (!valid.length) return;
   var sel = $('dsel'), drive = sel.value, start = $('dstart').checked ? 1 : 0;
@@ -2817,6 +2840,31 @@ $('dgo').onclick = function(){
   }
   closeDialog();
   doUpload(valid.map(function(f){ return { name: f.name, data: f.data, skip: '' }; }), drive, start, label);
+};
+
+// Добавление по ссылке http://: консоль сама открывает ссылку. .torrent идёт обычным путём (окно выбора места и файлов),
+// любой другой файл качается напрямую.
+function b64buf(s){ var bin = atob(s), u = new Uint8Array(bin.length); for (var k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k); return u.buffer; }
+$('urlb').onclick = function(){
+  var url = prompt(T('url_prompt'), 'http://');
+  if (!url) return;
+  url = url.trim();
+  if (!url || url === 'http://') return;
+  say(T('url_checking'), false);
+  withTimeout(api('/api/url_probe?url=' + encodeURIComponent(url)).then(function(r){ return r.json(); }), 40000).then(function(d){
+    if (!d.ok) { say(d.error || T('failed'), true); return; }
+    $('msg').style.display = 'none';
+    api('/status').then(function(r){ return r.json(); }).then(function(st){ lastData = st; }).catch(function(){}).then(function(){
+      if (d.torrent) {
+        var buf = b64buf(d.data), info = torrentInfo(buf);
+        if (!info) { say(T('url_badtorrent'), true); return; }
+        openDialog([{ name: (info.name || d.name.replace(/\.torrent$/i, '')) + '.torrent', data: buf, info: info }]);   // имя задачи = имя раздачи, а не адреса
+      } else {
+        if (d.duplicate) { say(T('url_dup'), true); return; }
+        openDialog([{ url: d.url, name: d.name, data: null, sizeKnown: !!d.size_known, info: { name: d.name, size: d.size_known ? d.size : 0, files: [{ path: d.name, size: d.size }] } }]);
+      }
+    });
+  }).catch(function(){ say(T('noanswer'), true); });
 };
 
 // Все задачи сразу
@@ -2976,19 +3024,15 @@ static bool read_more(int c, std::string& buf, int timeoutSec)
 
 static const size_t MAX_UPLOAD = 1024 * 1024;       // .torrent больше 1 МБ не принимаем
 
-// Добавление .torrent с другого устройства: проверяем и кладём на флешку, дальше его подхватит обычное сканирование.
-static void handle_add(int c, const std::string& query, const std::string& body)
+// Место для новой задачи по параметру drive (internal, номер флешки или пусто = по настройке). При ошибке сам отвечает клиенту.
+static bool pick_root(int c, const std::string& want, std::string& root)
 {
-    std::string name = safe_torrent_name(qget(query, "name"));
-
     // Куда класть: drive=internal (память консоли), drive=N (флешка N) или, если не указано, как выбрано в настройках
     // (save_to): память консоли либо флешка с наибольшим свободным местом.
-    std::string root;
-    std::string want = qget(query, "drive");
     bool useInternal = (want == "internal") || (want.empty() && g_saveTo.load() == 1);
     if (useInternal) {
         make_dirs(INTERNAL_ROOT);                      // папка создаётся при первом использовании
-        if (!is_dir(INTERNAL_ROOT)) { respond_json_error(c, 500, "Error", "cannot create the folder in the console memory"); return; }
+        if (!is_dir(INTERNAL_ROOT)) { respond_json_error(c, 500, "Error", "cannot create the folder in the console memory"); return false; }
         root = INTERNAL_ROOT;
     } else {
         // Накопитель выбран явно (drive=N) или берём тот, где больше свободного места: сначала среди тех, где уже есть папка
@@ -2998,10 +3042,10 @@ static void handle_add(int c, const std::string& query, const std::string& body)
             bool digits = true;
             for (size_t i = 0; i < want.size(); i++) if (want[i] < '0' || want[i] > '9') digits = false;
             int n = digits ? atoi(want.c_str()) : -1;
-            if (n < 0 || n >= MAX_USB) { respond_json_error(c, 400, "Bad Request", "drive must be internal or a USB number"); return; }
+            if (n < 0 || n >= MAX_USB) { respond_json_error(c, 400, "Bad Request", "drive must be internal or a USB number"); return false; }
             char mpb[96];
             snprintf(mpb, sizeof(mpb), "%s%d", USB_BASE, n);
-            if (!usb_mount_available(mpb)) { respond_json_error(c, 409, "Conflict", "USB drive " + std::to_string(n) + " is not mounted"); return; }
+            if (!usb_mount_available(mpb)) { respond_json_error(c, 409, "Conflict", "USB drive " + std::to_string(n) + " is not mounted"); return false; }
             mp = mpb;
         } else {
             unsigned long long bestFree = 0;
@@ -3015,7 +3059,7 @@ static void handle_add(int c, const std::string& query, const std::string& body)
                 unsigned long long fr = (statvfs(mpb, &sv) == 0) ? (unsigned long long)sv.f_bavail * sv.f_frsize : 0;
                 if (mp.empty() || (has && !bestHas) || (has == bestHas && fr > bestFree)) { mp = mpb; bestFree = fr; bestHas = has; }
             }
-            if (mp.empty()) { respond_json_error(c, 409, "Conflict", "no writable USB drive is mounted (you can save to the console memory instead)"); return; }
+            if (mp.empty()) { respond_json_error(c, 409, "Conflict", "no writable USB drive is mounted (you can save to the console memory instead)"); return false; }
         }
         root = mp + "/torrents";
         if (!is_dir(root)) {
@@ -3027,11 +3071,41 @@ static void handle_add(int c, const std::string& query, const std::string& body)
             if (mkdir(root.c_str(), 0777) != 0 && errno != EEXIST) err = errno;
             if (err != 0 || !is_dir(root)) {
                 respond_json_error(c, 500, "Error", "cannot create the 'torrents' folder on " + mp + " (errno " + std::to_string(err) + ": " + strerror(err) + "); is the drive read-only?");
-                return;
+                return false;
             }
             logf_("created the 'torrents' folder on %s", mp.c_str());
         }
     }
+
+    return true;
+}
+
+static std::string base64(const std::string& in)
+{
+    static const char* t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string o;
+    o.reserve((in.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        unsigned v = ((unsigned char)in[i] << 16) | ((unsigned char)in[i + 1] << 8) | (unsigned char)in[i + 2];
+        o += t[v >> 18]; o += t[(v >> 12) & 63]; o += t[(v >> 6) & 63]; o += t[v & 63];
+    }
+    if (i < in.size()) {
+        unsigned v = (unsigned char)in[i] << 16;
+        if (i + 1 < in.size()) v |= (unsigned char)in[i + 1] << 8;
+        o += t[v >> 18]; o += t[(v >> 12) & 63];
+        o += (i + 1 < in.size()) ? t[(v >> 6) & 63] : '=';
+        o += '=';
+    }
+    return o;
+}
+
+// Добавление .torrent с другого устройства: проверяем и кладём на флешку, дальше его подхватит обычное сканирование.
+static void handle_add(int c, const std::string& query, const std::string& body)
+{
+    std::string name = safe_torrent_name(qget(query, "name"));
+    std::string root;
+    if (!pick_root(c, qget(query, "drive"), root)) return;
 
     // Сначала во временный файл и проверка, что это настоящий .torrent.
     static volatile unsigned addSeq = 0;
@@ -3322,6 +3396,37 @@ static void handle_client(int c)
         if (body.size() < clen) { respond_json_error(c, 408, "Request Timeout", "incomplete upload"); return; }
         body.resize(clen);
         handle_add(c, query, body);
+    } else if (path == "/api/url_probe") {
+        // Проверка ссылки: .torrent возвращаем страницей содержимым (base64), дальше обычное добавление; иначе имя и размер файла.
+        std::string url = trim(qget(query, "url")), err;
+        if (!direct_url_ok(url, err)) { respond_json_error(c, 400, "Bad Request", err); return; }
+        UrlProbe pr;
+        if (!direct_probe(url, MAX_UPLOAD, pr)) { respond_json_error(c, 502, "Bad Gateway", pr.error); return; }
+        std::string j = "{\"ok\":true,\"torrent\":" + std::string(pr.torrent ? "true" : "false") + ",\"name\":\"" + json_escape(pr.name) +
+                        "\",\"url\":\"" + json_escape(url) + "\",\"size\":" + std::to_string((unsigned long long)pr.size) +
+                        ",\"size_known\":" + (pr.sizeKnown ? "true" : "false") + ",\"duplicate\":" + (direct_has_url(url) ? "true" : "false");
+        if (pr.torrent) j += ",\"data\":\"" + base64(pr.body) + "\"";
+        respond(c, "application/json", j + "}");
+    } else if (path == "/api/add_url") {
+        std::string url = trim(qget(query, "url")), err;
+        if (!direct_url_ok(url, err)) { respond_json_error(c, 400, "Bad Request", err); return; }
+        if (direct_has_url(url)) { respond(c, "application/json", "{\"ok\":true,\"duplicate\":true}"); return; }
+        std::string name = qget(query, "name"), sizeTxt = qget(query, "size"), startParam = qget(query, "start");
+        if (name.empty() || name.size() > 400) { respond_json_error(c, 400, "Bad Request", "name is missing or too long"); return; }
+        std::string root;
+        if (!pick_root(c, qget(query, "drive"), root)) return;
+        uint64_t size = strtoull(sizeTxt.c_str(), NULL, 10);
+        bool sizeKnown = qget(query, "size_known") == "1";
+        if (sizeKnown) {
+            struct statvfs sv;
+            if (statvfs(root.c_str(), &sv) == 0 && (uint64_t)sv.f_bavail * sv.f_frsize < size) {
+                respond_json_error(c, 507, "Insufficient Storage", "not enough free space: needs " + fmt_bytes(size) + ", free " + fmt_bytes((uint64_t)sv.f_bavail * sv.f_frsize));
+                return;
+            }
+        }
+        bool start = startParam.empty() ? g_autostart.load() : (startParam == "1");
+        queue_cmd("add_url", root + "\t" + url + "\t" + name + "\t" + std::to_string((unsigned long long)size) + "\t" + (sizeKnown ? "1" : "0") + "\t" + (start ? "1" : "0"));
+        respond(c, "application/json", std::string("{\"ok\":true,\"started\":") + (start ? "true" : "false") + "}");
     } else if (path == "/quit") {
         respond(c, "text/plain", "bye\n");
         g_quit = true;
@@ -3767,6 +3872,14 @@ static size_t apply_commands(time_t now)
     for (size_t i = 0; i < cmds.size(); i++) {
         const std::string& cmd = cmds[i].first;
         if (cmd == "set") { apply_set(cmds[i].second); continue; }
+        if (cmd == "add_url") {
+            std::vector<std::string> p;
+            const std::string& a = cmds[i].second;
+            size_t from = 0;
+            for (;;) { size_t t = a.find('\t', from); p.push_back(a.substr(from, t == std::string::npos ? std::string::npos : t - from)); if (t == std::string::npos) break; from = t + 1; }
+            if (p.size() == 6) direct_add(p[0], p[1], p[2], strtoull(p[3].c_str(), NULL, 10), p[4] == "1", p[5] == "1");
+            continue;
+        }
         if (cmd == "pause_all" || cmd == "resume_all") {
             bool pause = (cmd == "pause_all");
             int n = 0;
@@ -3778,6 +3891,7 @@ static size_t apply_commands(time_t now)
                 if (!pause) { o->failed = false; o->retryAt = 0; }
                 n++;
             }
+            direct_all(pause);
             logf_("command: %s (%d tasks)", cmd.c_str(), n);
             continue;
         }
@@ -3786,6 +3900,7 @@ static size_t apply_commands(time_t now)
 
         std::string hash = cmds[i].second;
         for (size_t k = 0; k < hash.size(); k++) if (hash[k] >= 'A' && hash[k] <= 'F') hash[k] = (char)(hash[k] - 'A' + 'a');
+        if (direct_command(cmd, hash)) continue;                    // загрузка по ссылке
         Item* it = NULL;
         for (size_t k = 0; k < g_items.size(); k++)
             if (g_items[k]->t.infoHashHex.compare(0, hash.size(), hash) == 0) { it = g_items[k]; break; }
@@ -4198,6 +4313,7 @@ int main()
     logf_("process: %s", process_identity().c_str());
     snprintf(g_notifyIcon, sizeof(g_notifyIcon), "http://127.0.0.1:%d/notify.png", HTTP_PORT);      // иконка уведомлений (способ проверен на консоли)
     if (g_resumeSession.load()) load_session();
+    direct_load();
     if (g_saveTo.load() == 1) make_dirs(INTERNAL_ROOT);
     writer_start();
     if (!http_spawn()) {
@@ -4299,6 +4415,11 @@ int main()
             upload_tick();
             manage_seeds(now);
             run_downloads(now);
+            {
+                std::vector<std::string> fin;
+                direct_tick(now, fin);
+                for (size_t k = 0; k < fin.size(); k++) notify("Download done: %s", cut_utf8(fin[k], 110).c_str());
+            }
             keep_awake(now);
             PHASE("downloads");
             if (g_active.empty() && g_seeds.empty()) usleep(20000);
@@ -4371,6 +4492,7 @@ int main()
     // Остановка: сохраняем прогресс и закрываем файлы.
     time_t now = time(NULL);
     close_all_seeds(now, "shutdown");
+    direct_shutdown();
     while (!g_active.empty()) close_job(g_active.back(), now, true);
     session_sync(time(NULL), true);      // что качалось на момент остановки (запись идёт через поток записи)
     // Дать дописать уже проверенные куски на диск (до 8 секунд), чтобы они не пропали при остановке.

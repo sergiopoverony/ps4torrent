@@ -18,12 +18,14 @@ html.replace(/data-i(?:18n|title)="([a-z0-9_]+)"/g, (m, k) => used.add(k));
 ['st_downloading', 'st_paused', 'st_complete', 'st_offline', 'st_checking', 'st_waiting', 'st_queued'].forEach(k => used.add(k));   // T('st_' + status)
 const missing = [...used].filter(k => !(k in en));
 ok(missing.length === 0, 'every text key used by the page exists in en.json: ' + missing.join(','));
-const unused = Object.keys(en).filter(k => !used.has(k) && k !== '_name');
+['st_error'].forEach(k => used.add(k));
+// Ключи tc_* и err_* читает приложение на консоли (общие языковые файлы с 1.8.0.3), страница их не использует.
+const unused = Object.keys(en).filter(k => !used.has(k) && k !== '_name' && !/^(tc_|err_)/.test(k));
 ok(unused.length === 0, 'no unused keys in en.json: ' + unused.join(','));
 
 function mkctx(nav, stored, confirmAns){
-  const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb']
-    .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
+  const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk']
+    .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
   const store = Object.assign({}, stored), calls = [];
   const stat = []; html.replace(/<(\w+)([^>]*?)data-i18n="([^"]+)"([^>]*)>/g, (m, tag, a, key, b) => {
     const idm = (a + b).match(/id="([^"]+)"/), tm = (a + b).match(/data-ititle="([^"]+)"/), el = idm ? els[idm[1]] : { };
@@ -40,7 +42,7 @@ function mkctx(nav, stored, confirmAns){
     prompt:()=>'', confirm:()=>confirmAns, setTimeout:(f)=>{ f && f(); return 0; }, clearTimeout:()=>{}, setInterval:()=>0, Date:{ now:()=>1e6 },
     encodeURIComponent, decodeURIComponent, Array, String, Math, Promise, Error, parseInt, TextDecoder, Uint8Array, FileReader: function(){},
     fetch:(url)=>{ calls.push(url);
-      if (url.startsWith('/lang/')) { const nm = url.slice(6);
+      if (url.startsWith('/lang/')) { const nm = url.slice(6).split('?')[0];
         if (nm !== 'index.json' && !fs.existsSync(dir + nm)) return Promise.resolve({ ok:false, status:404, json:()=>Promise.reject(new Error('x')) });
         const body = nm === 'index.json' ? fs.readdirSync(dir).filter(x => x.endsWith('.json')).map(x => ({ code: x.slice(0, -5), name: JSON.parse(fs.readFileSync(dir + x, 'utf8'))._name })) : JSON.parse(fs.readFileSync(dir + nm, 'utf8'));
         return Promise.resolve({ ok:true, status:200, json:()=>Promise.resolve(body) }); }

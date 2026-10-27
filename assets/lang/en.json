@@ -163,6 +163,17 @@
 "u_mbs": "{0} MB/s",
 "s_upload": "upload {0} KB/s",
 "row_seeding": "seeding",
+"dlg_title_url": "Download by link",
+"btn_add_url": "+ link",
+"url_prompt": "Direct http:// link to a file or to a .torrent:",
+"url_checking": "Checking the link...",
+"url_dup": "This link is already in the list",
+"url_badtorrent": "The link points to a damaged .torrent",
+"dlg_size_unknown": "size unknown",
+"row_link": "link",
+"row_speed_http": "{0} KB/s",
+"st_error": "error",
+"tc_st_error": "error",
 "tc_upload": "upload",
 "tc_seeding": "seeding"
 }

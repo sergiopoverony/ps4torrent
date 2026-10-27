@@ -18,7 +18,7 @@ const five = mk('Five Files', [['a.pkg', 1 * GB], ['b.pkg', 2 * GB], ['c.pkg', 3
 const second = mk('Second Pack', [['x.bin', 100], ['y.bin', 200]]);
 const junk = new Uint8Array([1, 2, 3]).buffer;
 
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, scrollTop:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
 Object.defineProperty(els.dsel, 'innerHTML', { get(){ return this._h || ''; }, set(v){ this._h = v; const re = /<option value="([^"]*)">([^<]*)<\/option>/g; let m; this.options = []; while ((m = re.exec(v))) this.options.push({ value: m[1], text: m[2].replace(/&quot;/g,'"').replace(/&amp;/g,'&') }); } });
 let status = { items: [
   { hash:'a'.repeat(40), title:'Pack One', status:'paused', size:5*GB, done:0, pct:0, speed_kb:0, eta_s:-1, peers:0, paused:true, low_space:false, nfiles:3, nskip:1, root:'/mnt/usb0/torrents' },
@@ -33,7 +33,7 @@ const ctx = { document:{ getElementById:id=>els[id], querySelectorAll:()=>[] }, 
   setTimeout:(f)=>{ f && f(); return 0; }, clearTimeout:()=>{}, setInterval:()=>0, Date:{ now:()=>1e6 }, encodeURIComponent, decodeURIComponent, Array, String, Math, Promise, Error, parseInt, TextDecoder, Uint8Array,
   FileReader: function(){ this.readAsArrayBuffer = function(f){ this.result = f.__buf; setImmediate(() => this.onload()); }; },
   fetch:(url, opts)=>{ calls.push(url); bodies.push(opts && opts.body);
-    if (url.startsWith('/lang/')) { const fsx = require('fs'), dir = '/tmp/daemon/ps4torrentd/assets/lang/'; const nm = url.slice(6);
+    if (url.startsWith('/lang/')) { const fsx = require('fs'), dir = '/tmp/daemon/ps4torrentd/assets/lang/'; const nm = url.slice(6).split('?')[0];
       const body = nm === 'index.json' ? fsx.readdirSync(dir).filter(x => x.endsWith('.json')).map(x => ({ code: x.slice(0, -5), name: JSON.parse(fsx.readFileSync(dir + x, 'utf8'))._name })) : JSON.parse(fsx.readFileSync(dir + nm, 'utf8'));
       return Promise.resolve({ ok:true, status:200, json:()=>Promise.resolve(body) }); }
     const body = url.startsWith('/status') ? status : url.startsWith('/api/files') ? filesReply : { ok:true };
@@ -102,7 +102,8 @@ const lastAdd = () => calls.filter(c => c.startsWith('/api/add')).pop();
   // 8. кнопка Files у задачи
   await flush();
   ok(els.m.innerHTML.includes('data-c="files" data-h="' + 'a'.repeat(40) + '"'), 'a multi-file unfinished task has a "files" button');
-  ok(!els.m.innerHTML.includes('data-c="files" data-h="' + 'b'.repeat(40) + '"') && !els.m.innerHTML.includes('data-c="files" data-h="' + 'c'.repeat(40) + '"'), 'finished and single-file tasks have none');
+  // с 1.8.0.3 у завершённой раздачи из нескольких файлов кнопка есть (докачать снятые файлы); у раздачи из одного файла нет
+  ok(els.m.innerHTML.includes('data-c="files" data-h="' + 'b'.repeat(40) + '"') && !els.m.innerHTML.includes('data-c="files" data-h="' + 'c'.repeat(40) + '"'), 'a finished multi-file task has a "files" button, a single-file task has none');
   ok(els.m.innerHTML.includes('2/3 files'), 'the row shows how many files are selected: 2/3');
   calls.length = 0;
   els.m.onclick({ target: { dataset: { c: 'files', h: 'a'.repeat(40) }, disabled: false } }); await flush();

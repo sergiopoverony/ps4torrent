@@ -25,13 +25,14 @@
 | Полная проверка у задач со снятыми файлами | `python3 qv_assert_test.py` (`daemon_sel`) | 8/8 |
 | Удаление при недописанных кусках (было падение) | `python3 delzombie_test.py daemon_host` | 13/13 (на `daemon_oldhost` со старым кодом: ASAN heap-use-after-free) |
 | Медленное удаление файлов (поток) | `python3 slowdel_test.py` (хук `/tmp/ft/unlink_cost`) | 8/8 |
-| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js`, `node page/jstest7.js`, `node page/jstest8.js` | 20/20, 34/34, 17/17, 20/20, 15/15 |
+| Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js`, `node page/jstest7.js`, `node page/jstest8.js` | 20/20, 34/34, 17/17, 20/20, 15/15 (страницу для них вырезать из `main.cpp` в `/tmp/page/script.js` и `/tmp/page/page.html`) |
 | Замена бесполезных пиров | `ft/mix_run.sh` (`mix_test.py` + `peers_mix.py`, бинарник `daemon_host`) | 4/4 |
 | Языки и выключение | `ft/lang_test.py` | 9/9 |
 | Автопауза при нехватке памяти | `ft/memguard_run.sh` (`memguard_test.py`, бинарник `daemon_memg`) | 21/21 |
 | Дубликаты | `ft/dup_test.py` | 9/9 |
 | Отдача и сидирование (пир качает у демона, лимит 32/128/256 КБ/с, выключение, перезапуск, отдача во время загрузки) | `ft/upload_test.py` (бинарник `daemon_sel`; одной копией; запускать как `python3 /tmp/ft/upload_test.py`) | 33/33 |
 | Докачка файла у завершённой раздачи, защита от сна | `ft/reopen_test.py` (бинарник `daemon_sel`; запускать одной копией, торрент `Big8M.torrent` должен соответствовать данным в `/tmp/ft/src/Big8M`: при несовпадении пересоздать через `mk.py`: `make("Big8M", [("big.bin", 26000000), ("extra/more.bin", 9000000)], ..., )` с `PL = 8388608`) | 15/15 |
+| Загрузка по ссылке http:// (проверка ссылки, .torrent по ссылке, докачка, без докачки, обрывы, перезапуск, ошибки, удаление) | `ft/direct_test.py` (бинарник `daemon_direct`; веб-сервер внутри теста на порту 18900) | 44/44 |
 
 Каждый `*_run.sh` пишет результат в `<имя>.result`. Тесты на ThreadSanitizer: `tsan_net_run.sh` (бинарник `daemon_tsan`
 собирается как остальные, но с `-fsanitize=thread` вместо address,undefined).
