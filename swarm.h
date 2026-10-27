@@ -16,6 +16,8 @@ struct SwarmStatus {
     int sending;          // сколько из них присылали блоки за последние 10 секунд (реально работают)
     uint32_t haveCount;    // сколько кусков уже есть
     int speedKB;           // текущая скорость, КБ/с
+    uint64_t upBytes;      // отдано пирам за эту работу, байт
+    int upKB;              // скорость отдачи этой раздачи, КБ/с
 };
 
 // Загрузка одной раздачи со многими пирами. Не блокирует: общий цикл программы вызывает
@@ -32,7 +34,8 @@ struct PartialJobInfo {
 
 class Swarm {
 public:
-    Swarm(const Torrent& t, Storage& st, DownloadState& ds, const unsigned char peerId[20]);
+    // seed=true: раздача уже скачана, мы только отдаём (ничего не запрашиваем, трекер спрашиваем редко, лишних пиров не держим).
+    Swarm(const Torrent& t, Storage& st, DownloadState& ds, const unsigned char peerId[20], bool seed = false);
     ~Swarm();
 
     // Служебная работа (освобождение застрявших кусков, запрос пиров, новые соединения) и

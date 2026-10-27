@@ -156,5 +156,13 @@
 "tc_hint_check": "check",
 "tc_hint_apply": "apply",
 "tc_hint_get": "download checked",
-"tc_back": "back"
+"tc_back": "back",
+"cfg_upload": "upload to other peers (seeding)",
+"cfg_upload_kb": "upload speed limit",
+"u_kbs": "{0} KB/s",
+"u_mbs": "{0} MB/s",
+"s_upload": "upload {0} KB/s",
+"row_seeding": "seeding",
+"tc_upload": "upload",
+"tc_seeding": "seeding"
 }

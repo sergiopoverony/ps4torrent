@@ -17,6 +17,7 @@ struct Item {
     bool lowSpace = false;
     int nfiles = 0;         // сколько файлов в раздаче
     int nskip = 0;          // сколько из них снято с загрузки
+    bool seeding = false;   // завершённая раздача сейчас отдаётся пирам
     std::string root;       // куда качается (для информации)
     std::string title;
 };
@@ -35,6 +36,8 @@ struct ServerStatus {
     std::vector<Item> items;
     std::vector<Drive> drives;
     int totalSpeedKB = 0;
+    int upKB = 0;            // общая скорость отдачи, КБ/с
+    bool upload = false;     // отдача включена в настройках службы
     int maxParallel = 0;
     int listenPort = 0;
     unsigned incoming = 0;

@@ -438,6 +438,7 @@ static void draw_row(int vis, int idx)
 
     std::string stText;
     if (it.status == "downloading") stText = fmt_speed(it.speedKB);
+    else if (it.seeding && it.status == "complete") stText = tr("tc_seeding", "seeding");
     else                            stText = status_label(it.status);
     put_right(COL_SPEED, W_SPEED, stText, base, status_color(it.status), bg);
 
@@ -717,6 +718,7 @@ static void draw_all()
         }
 
         line += " | " + fmt_speed(g_status.totalSpeedKB);
+        if (g_status.upload) line += " | " + tr("tc_upload", "upload") + " " + fmt_speed(g_status.upKB);
 
         int maxChars = (FRAME_WIDTH - MARGIN_X - statusX) / g_cellW;
         draw_text(fit(line, maxChars), statusX, statusBaseline, lineColor, C_BG);

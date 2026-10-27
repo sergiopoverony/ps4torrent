@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include "bigbuf.h"
 #include "writer.h"
+#include "upload.h"
 #include <pthread.h>
 #include <atomic>
 #include <memory>
@@ -58,6 +59,12 @@ static const int STALL_RESTART_SECONDS = 30;             // совсем нет 
 static const int ANNOUNCE_NO_PEERS_SECONDS = 45;         // как часто спрашивать трекер, когда никто не отдаёт
 static const int ANNOUNCE_WEAK_SECONDS = 60;             // отдающих пиров мало
 static const int ANNOUNCE_NORMAL_SECONDS = 120;
+static const int ANNOUNCE_SEED_SECONDS = 600;            // раздача сидирует: спрашиваем трекер редко
+static const int UPLOAD_SLOTS = 4;                       // сколько пиров одновременно качают у одной раздачи
+static const size_t UPQ_MAX = 12;                        // сколько запросов блоков от одного пира держим в очереди
+static const size_t OUT_SOFT_LIMIT = 96 * 1024;          // пока в очереди отправки больше, новые блоки пиру не готовим
+static const int MAX_UPLOAD_BLOCKS_PASS = 6;             // блоков, читаемых с диска за один проход (диск читаем в главном потоке)
+static const int KEEPALIVE_SECONDS = 90;
 
 static uint32_t get32(const unsigned char* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
@@ -106,6 +113,10 @@ struct Req {
     time_t sent;
 };
 
+struct UpReq {                          // запрос блока от пира (он качает у нас)
+    uint32_t piece, begin, len;
+};
+
 struct Conn {
     int fd = -1;
     int state = 0;                      // 0 подключается, 1 ждём handshake, 2 работает
@@ -119,6 +130,12 @@ struct Conn {
     std::string failWhy;                // почему соединение пришлось закрыть (для журнала)
     std::string remoteId;               // peer id из handshake (20 байт), чтобы не держать дубликаты
     bool incoming = false;              // пир подключился к нам сам
+    // Отдача: пир качает у нас
+    bool peerInterested = false;        // пир хочет у нас качать
+    bool unchoked = false;              // мы разрешили ему качать
+    std::vector<UpReq> upq;             // его запросы блоков, ждущие своей очереди
+    uint64_t upBytes = 0;
+    time_t lastSend = 0, lastUp = 0;
 };
 
 struct Ctx {
@@ -138,6 +155,9 @@ struct Ctx {
     unsigned incomingTotal = 0;         // сколько входящих соединений принято за сессию
     std::map<std::string, int> failStats;   // причины закрытых соединений за последнюю минуту
     time_t lastFailLog = 0;
+    bool seed = false;                  // раздача уже скачана: только отдаём
+    uint64_t upBytes = 0;               // отдано пирам за эту работу
+    std::vector<uint32_t> haveEvents;   // куски, закончившиеся с прошлого прохода (рассылаем пирам сообщением have)
     Ctx(const Torrent& t_, Storage& st_, DownloadState& ds_) : t(t_), st(st_), ds(ds_) { memset(selfId, 0, sizeof(selfId)); }
 };
 
@@ -178,6 +198,7 @@ static bool flush_out(Conn& c) {
         int r = send(c.fd, c.out.data(), c.out.size(), SEND_FLAGS);
         if (r > 0) {
             c.out.erase(0, (size_t)r);
+            c.lastSend = time(NULL);
         } else if (r < 0 && IS_AGAIN(errno)) {
             return true;
         } else {
@@ -237,7 +258,7 @@ static bool next_block(Ctx& x, Conn& c, uint32_t& pi, uint32_t& bi) {
 }
 
 static bool fill_requests(Ctx& x, Conn& c) {
-    if (c.state != 2 || c.choked) return true;
+    if (x.seed || c.state != 2 || c.choked) return true;
     while ((int)c.pending.size() < MAX_INFLIGHT) {
         uint32_t pi, bi;
         if (!next_block(x, c, pi, bi)) break;
@@ -273,6 +294,7 @@ static void finalize_piece(Ctx& x, uint32_t idx) {
     x.ds.have[idx] = true;
     x.ds.haveCount++;
     if (x.ds.needLeft > 0 && x.ds.needLeft != 0xFFFFFFFFu && (x.ds.skip.empty() || !x.ds.skip[idx])) x.ds.needLeft--;
+    if (upload_enabled() && x.haveEvents.size() < 4096) x.haveEvents.push_back(idx);     // пирам сообщим, что этот кусок у нас есть
     x.ds.recent.push_back(idx);                       // запоминаем для выборочной проверки после перезапуска
     if (x.ds.recent.size() > 16) x.ds.recent.erase(x.ds.recent.begin());
     pb.active = false;
@@ -403,6 +425,24 @@ static bool on_message(Ctx& x, Conn& c, const unsigned char* m, uint32_t len) {
         release_pending(x, c);
     } else if (id == 1) {
         c.choked = false;
+    } else if (id == 2) {
+        c.peerInterested = true;
+    } else if (id == 3) {
+        c.peerInterested = false;
+        c.upq.clear();
+    } else if (id == 6 && len >= 13) {
+        // Пир просит блок. Отвечаем, только если отдача включена, мы ему разрешили (unchoke), кусок у нас целиком и проверен.
+        uint32_t pi = get32(m + 1), begin = get32(m + 5), blen = get32(m + 9);
+        if (upload_enabled() && c.unchoked && pi < np && x.ds.have[pi] && blen > 0 && blen <= 32768 &&
+            (uint64_t)begin + blen <= x.st.piece_size(pi) && c.upq.size() < UPQ_MAX) {
+            UpReq r;
+            r.piece = pi; r.begin = begin; r.len = blen;
+            c.upq.push_back(r);
+        }
+    } else if (id == 8 && len >= 13) {
+        uint32_t pi = get32(m + 1), begin = get32(m + 5), blen = get32(m + 9);
+        for (size_t k = 0; k < c.upq.size(); k++)
+            if (c.upq[k].piece == pi && c.upq[k].begin == begin && c.upq[k].len == blen) { c.upq.erase(c.upq.begin() + k); break; }
     } else if (id == 4 && len >= 5) {
         uint32_t i = get32(m + 1);
         if (i < np) c.has[i] = true;
@@ -420,6 +460,7 @@ static bool on_message(Ctx& x, Conn& c, const unsigned char* m, uint32_t len) {
 // Разбор принятых данных прямо из переданного буфера. used: сколько байт разобрано (остальное, неполное сообщение, остаётся ждать).
 static bool parse_buf(Ctx& x, Conn& c, const unsigned char* d, size_t n, size_t& used) {
     size_t pos = 0;
+    const uint32_t np = x.t.numPieces;
     used = 0;
     if (c.state == 1) {
         if (n < 68) return true;
@@ -437,8 +478,19 @@ static bool parse_buf(Ctx& x, Conn& c, const unsigned char* d, size_t n, size_t&
         pos = 68;
         c.state = 2;
         c.readyAt = time(NULL);
-        static const unsigned char interested[5] = {0, 0, 0, 1, 2};
-        c.out.append((const char*)interested, 5);
+        if (!x.seed) {
+            static const unsigned char interested[5] = {0, 0, 0, 1, 2};
+            c.out.append((const char*)interested, 5);
+        }
+        if (upload_enabled() && x.ds.haveCount > 0) {         // сообщаем, какие куски у нас есть, иначе пир не станет у нас качать
+            size_t nb = (np + 7) / 8;
+            std::string bf(5 + nb, '\0');
+            put32((unsigned char*)&bf[0], (uint32_t)(1 + nb));
+            bf[4] = 5;
+            for (uint32_t i = 0; i < np; i++)
+                if (x.ds.have[i]) bf[5 + i / 8] = (char)((unsigned char)bf[5 + i / 8] | (0x80 >> (i % 8)));
+            c.out += bf;
+        }
     }
     while (c.state == 2) {
         if (n - pos < 4) break;
@@ -499,6 +551,87 @@ static bool do_read(Ctx& x, Conn& c) {
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------- отдача
+
+static void send_simple(Conn& c, unsigned char id) {            // 0 choke, 1 unchoke, 2 interested ...
+    static const unsigned char tmpl[5] = {0, 0, 0, 1, 0};
+    unsigned char m[5];
+    memcpy(m, tmpl, 5);
+    m[4] = id;
+    c.out.append((const char*)m, 5);
+}
+
+// Кому разрешено качать: до UPLOAD_SLOTS заинтересованных пиров; если отдачу выключили, всем запрещаем.
+static void manage_choke(std::vector<Conn>& conns) {
+    const bool on = upload_enabled();
+    int slots = 0;
+    for (size_t i = 0; i < conns.size(); i++)
+        if (conns[i].fd >= 0 && conns[i].state == 2 && conns[i].unchoked) slots++;
+    for (size_t i = 0; i < conns.size(); i++) {
+        Conn& c = conns[i];
+        if (c.fd < 0 || c.state != 2) continue;
+        if (c.unchoked && (!on || !c.peerInterested)) {
+            send_simple(c, 0);
+            c.unchoked = false;
+            c.upq.clear();
+            slots--;
+        } else if (!c.unchoked && on && c.peerInterested && slots < UPLOAD_SLOTS) {
+            send_simple(c, 1);
+            c.unchoked = true;
+            slots++;
+        }
+    }
+}
+
+// Отправляет пирам запрошенные блоки в пределах общей скорости отдачи. Диск читаем в главном потоке, поэтому за проход
+// читаем немного блоков (при пределе до 1 МБ/с это максимум ~64 блока в секунду).
+static void serve_uploads(Ctx& x, std::vector<Conn>& conns, time_t now) {
+    if (!upload_enabled()) {
+        for (size_t i = 0; i < conns.size(); i++) conns[i].upq.clear();
+        return;
+    }
+    static unsigned char ubuf[32768];
+    static size_t rr = 0;
+    static time_t lastSlowLog = 0;
+    const size_t n = conns.size();
+    int blocks = 0;
+    bool budgetOut = false;
+    for (size_t k = 0; k < n && blocks < MAX_UPLOAD_BLOCKS_PASS && !budgetOut; k++) {
+        Conn& c = conns[(rr + k) % n];
+        while (c.fd >= 0 && c.state == 2 && c.unchoked && !c.upq.empty() && c.out.size() < OUT_SOFT_LIMIT && blocks < MAX_UPLOAD_BLOCKS_PASS) {
+            UpReq r = c.upq.front();
+            if (upload_available() < r.len) { budgetOut = true; break; }      // лимит скорости: ждём, пока накопится
+            uint64_t t0 = mono_ms();
+            bool ok = x.st.read_piece_part(r.piece, r.begin, ubuf, r.len);
+            uint64_t took = mono_ms() - t0;
+            if (took > 500 && now - lastSlowLog >= 30) {
+                lastSlowLog = now;
+                logf_("  [%s] reading a block for upload took %llu ms (slow drive)", x.tag.c_str(), (unsigned long long)took);
+            }
+            c.upq.erase(c.upq.begin());
+            if (!ok) {
+                logf_("  [%s] cannot read piece %u from the drive for upload, dropping peer %s", x.tag.c_str(), r.piece, c.key.c_str());
+                c.failWhy = "cannot read the piece for upload";
+                conn_close(x, c, "cannot read the piece for upload");
+                break;
+            }
+            unsigned char hdr[13];
+            put32(hdr, 9 + r.len);
+            hdr[4] = 7;
+            put32(hdr + 5, r.piece);
+            put32(hdr + 9, r.begin);
+            c.out.append((const char*)hdr, 13);
+            c.out.append((const char*)ubuf, r.len);
+            upload_consume(r.len);
+            c.upBytes += r.len;
+            c.lastUp = now;
+            x.upBytes += r.len;
+            blocks++;
+        }
+    }
+    rr++;
 }
 
 // Бросает кусок: освобождает память и снимает его запросы у всех соединений.
@@ -624,6 +757,10 @@ struct Swarm::Impl {
     uint32_t lastHave;
     int curSpeedKB, lastReady, lastSending, maxConns;
     double smoothKB = 0;                 // сглаженная скорость (данные приходят пачками)
+    double smoothUpKB = 0;               // то же для отдачи
+    uint64_t lastUpBytes = 0;
+    int curUpKB = 0;
+    time_t lastSeedLog = 0;
     bool finished;
     std::string reason;
 
@@ -644,10 +781,11 @@ struct Swarm::Impl {
     }
 };
 
-Swarm::Swarm(const Torrent& t, Storage& st, DownloadState& ds, const unsigned char peerId[20])
+Swarm::Swarm(const Torrent& t, Storage& st, DownloadState& ds, const unsigned char peerId[20], bool seed)
     : p(new Impl(t, st, ds, peerId))
 {
     Ctx& x = p->x;
+    x.seed = seed;
     memcpy(x.selfId, peerId, 20);
     x.pieces.resize(t.numPieces);
     size_t ma = MAX_ACTIVE_BYTES / t.pieceLength;
@@ -655,7 +793,8 @@ Swarm::Swarm(const Torrent& t, Storage& st, DownloadState& ds, const unsigned ch
     if (ma > 64) ma = 64;
     x.maxActive = ma;
     x.tag = t.infoHashHex.size() >= 6 ? t.infoHashHex.substr(0, 6) : std::string("------");
-    logf_("  [%s] up to %d pieces of %u KB (%u MB) are held in memory at once", x.tag.c_str(), (int)ma, t.pieceLength / 1024, (unsigned)((uint64_t)ma * t.pieceLength >> 20));
+    if (seed) logf_("  [%s] seeding (upload only)", x.tag.c_str());
+    else logf_("  [%s] up to %d pieces of %u KB (%u MB) are held in memory at once", x.tag.c_str(), (int)ma, t.pieceLength / 1024, (unsigned)((uint64_t)ma * t.pieceLength >> 20));
 
     // Восстанавливаем недокачанные куски, сохранённые раньше: блоки читаем обратно из итоговых файлов.
     // Если что-то не совпадёт, ничего страшного: готовый кусок всё равно проверяется по SHA-1.
@@ -881,6 +1020,8 @@ SwarmStatus Swarm::status() const
     ss.sending = p->lastSending;
     ss.haveCount = p->x.ds.haveCount;
     ss.speedKB = p->curSpeedKB;
+    ss.upBytes = p->x.upBytes;
+    ss.upKB = p->curUpKB;
     return ss;
 }
 
@@ -892,14 +1033,14 @@ int Swarm::prepare(time_t now, fd_set& rf, fd_set& wf)
     DownloadState& ds = x.ds;
 
     if (s.finished) return -1;
-    if (ds.needLeft == 0) { s.finish("complete"); return -1; }
+    if (ds.needLeft == 0 && !x.seed) { s.finish("complete"); return -1; }
     if (x.fatal) { s.finish("write failed"); return -1; }
 
     if (x.totalBytes != s.prevTotal) { s.prevTotal = x.totalBytes; s.lastDataTime = now; }
 
     // Куски, по которым давно ничего не приходит: сначала перезапрашиваем недостающие блоки
     // (полученные остаются), и только если совсем ничего нет 10 минут, выбрасываем кусок.
-    for (size_t k = x.activeList.size(); k > 0; k--) {
+    for (size_t k = x.seed ? 0 : x.activeList.size(); k > 0; k--) {
         uint32_t pidx = x.activeList[k - 1];
         PieceBuf& pb = x.pieces[pidx];
         if (pb.writing) continue;                         // проверенный кусок ждёт записи на диск
@@ -917,24 +1058,29 @@ int Swarm::prepare(time_t now, fd_set& rf, fd_set& wf)
     }
 
     // Совсем нет данных: пересоздаём соединения и сразу спрашиваем у трекера свежий список пиров.
-    if (now - s.lastDataTime > STALL_RESTART_SECONDS) {
+    if (!x.seed && now - s.lastDataTime > STALL_RESTART_SECONDS) {
         logf_("  [%s] no data for %d s, restarting connections", x.tag.c_str(), STALL_RESTART_SECONDS);
         soft_restart(x, s.conns, s.candidates);
         s.lastAnnounce = 0;
         s.lastDataTime = now;
     }
 
-    if (now - s.t0 > 86400) { s.finish("time limit"); return -1; }
-    // Прогресс = завершённый кусок ИЛИ хоть какие-то данные (при кусках по 8 МБ и медленных пирах
-    // кусок может собираться дольше 5 минут).
-    if (now - std::max(s.lastProgress, s.lastDataTime) > 300) { s.finish("no data for 5 minutes"); return -1; }
+    if (!x.seed) {
+        if (now - s.t0 > 86400) { s.finish("time limit"); return -1; }
+        // Прогресс = завершённый кусок ИЛИ хоть какие-то данные (при кусках по 8 МБ и медленных пирах
+        // кусок может собираться дольше 5 минут).
+        if (now - std::max(s.lastProgress, s.lastDataTime) > 300) { s.finish("no data for 5 minutes"); return -1; }
+    }
 
     // Запрос новых пиров у трекеров: идёт в отдельном потоке, здесь только запускаем его и забираем результат.
     size_t wantMore = (size_t)(s.maxConns < 10 ? s.maxConns : 10);
     bool weak = s.lastSending < WANT_SENDING_PEERS;            // отдающих пиров мало: новых кандидатов нужно больше
-    if (!s.pendingAnnounce && s.candidates.empty() && (s.conns.size() < wantMore || weak) &&
+    bool doAnnounce;
+    if (x.seed) doAnnounce = (s.lastAnnounce == 0 || now - s.lastAnnounce >= ANNOUNCE_SEED_SECONDS) && s.conns.size() < wantMore;
+    else doAnnounce = (s.conns.size() < wantMore || weak) &&
         (s.lastAnnounce == 0 ||
-         now - s.lastAnnounce >= (s.lastReady == 0 ? ANNOUNCE_NO_PEERS_SECONDS : (weak ? ANNOUNCE_WEAK_SECONDS : ANNOUNCE_NORMAL_SECONDS)))) {
+         now - s.lastAnnounce >= (s.lastReady == 0 ? ANNOUNCE_NO_PEERS_SECONDS : (weak ? ANNOUNCE_WEAK_SECONDS : ANNOUNCE_NORMAL_SECONDS)));
+    if (!s.pendingAnnounce && s.candidates.empty() && doAnnounce) {
         uint64_t done = (uint64_t)ds.haveCount * t.pieceLength;
         uint64_t left = done >= t.totalSize ? 0 : t.totalSize - done;
         if (!start_announce(t, s.peerId, left, s.pendingAnnounce)) s.lastAnnounce = now;     // нечего спрашивать: повтор позже
@@ -973,7 +1119,7 @@ int Swarm::prepare(time_t now, fd_set& rf, fd_set& wf)
         int freed = 0;
         for (size_t i = 0; i < s.conns.size() && freed < 2; i++) {
             Conn& c = s.conns[i];
-            if (c.fd < 0 || c.state != 2 || !c.pending.empty()) continue;
+            if (c.fd < 0 || c.state != 2 || !c.pending.empty() || c.unchoked) continue;
             if (now - c.readyAt <= ROTATE_IDLE_SECONDS || (c.lastBlock != 0 && now - c.lastBlock <= ROTATE_IDLE_SECONDS)) continue;
             conn_close(x, c, "replaced by a new peer (it was idle)");
             freed++;
@@ -1043,6 +1189,10 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
         double inst = (double)(x.totalBytes - s.lastSpeedBytes) / 1024.0 / (double)dt;
         for (uint64_t k = 0; k < dt && k < 30; k++) s.smoothKB = s.smoothKB * 0.85 + inst * 0.15;
         s.curSpeedKB = (int)(s.smoothKB + 0.5);
+        double instUp = (double)(x.upBytes - s.lastUpBytes) / 1024.0 / (double)dt;
+        for (uint64_t k = 0; k < dt && k < 30; k++) s.smoothUpKB = s.smoothUpKB * 0.85 + instUp * 0.15;
+        s.curUpKB = (int)(s.smoothUpKB + 0.5);
+        s.lastUpBytes = x.upBytes;
         s.lastSpeedBytes = x.totalBytes;
         s.lastSpeedT = now;
     }
@@ -1092,7 +1242,15 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
         } else if (c.state == 1) {
             if (now - c.started > HANDSHAKE_TIMEOUT_SECONDS) conn_close(x, c, "handshake timeout");
         } else {
-            if (now - c.lastRecv > 120) { conn_close(x, c, "idle"); continue; }
+            if (now - c.lastRecv > (upload_enabled() ? 300 : 120)) { conn_close(x, c, "idle"); continue; }
+            // Пиру, который у нас качает, нужно хоть изредка слать keep-alive, иначе он сам нас отпустит.
+            if (upload_enabled() && c.out.empty() && now - c.lastSend >= KEEPALIVE_SECONDS) {
+                static const unsigned char ka[4] = {0, 0, 0, 0};
+                c.out.append((const char*)ka, 4);
+                flush_out(c);
+            }
+            // Сидирование: пир, которому от нас ничего не нужно (сам сидирует или не хочет), занимает место зря.
+            if (x.seed && !c.peerInterested && now - c.readyAt > 45) { conn_close(x, c, "peer wants nothing from us"); continue; }
             // Тишина считается от последнего пришедшего блока (или от отправки самого старого запроса, если он новее):
             // медленный, но живой пир, который шлёт блоки, не отпускается.
             if (!c.pending.empty() && now - std::max(c.lastBlock, c.pending[0].sent) > PEER_SILENT_SECONDS) {
@@ -1100,7 +1258,8 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
                 continue;
             }
             // Пир не разрешил нам качать (choke) и ничего не присылает: он только занимает место.
-            if (c.choked && c.pending.empty() && now - std::max(c.readyAt, c.lastBlock) > PEER_USELESS_SECONDS) {
+            if (!x.seed && c.choked && c.pending.empty() && !(upload_enabled() && c.peerInterested) &&
+                now - std::max(c.readyAt, c.lastBlock) > PEER_USELESS_SECONDS) {
                 conn_close(x, c, "choked for too long");
                 continue;
             }
@@ -1114,9 +1273,41 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
     for (size_t i = s.conns.size(); i > 0; i--)
         if (s.conns[i - 1].fd < 0) s.conns.erase(s.conns.begin() + (i - 1));
 
+    // Отдача: сообщаем пирам о новых кусках, раздаём слоты "можно качать", отправляем запрошенные блоки.
+    if (!x.haveEvents.empty()) {
+        if (upload_enabled()) {
+            for (size_t i = 0; i < s.conns.size(); i++) {
+                Conn& c = s.conns[i];
+                if (c.fd < 0 || c.state != 2) continue;
+                for (size_t k = 0; k < x.haveEvents.size(); k++) {
+                    unsigned char m[9];
+                    put32(m, 5);
+                    m[4] = 4;
+                    put32(m + 5, x.haveEvents[k]);
+                    c.out.append((const char*)m, 9);
+                }
+            }
+        }
+        x.haveEvents.clear();
+    }
+    manage_choke(s.conns);
+    serve_uploads(x, s.conns, now);
+    for (size_t i = 0; i < s.conns.size(); i++) {
+        Conn& c = s.conns[i];
+        if (c.fd >= 0 && c.state == 2 && !c.out.empty() && !flush_out(c)) conn_close(x, c, c.failWhy.empty() ? "send failed" : c.failWhy.c_str());
+    }
+    for (size_t i = s.conns.size(); i > 0; i--)
+        if (s.conns[i - 1].fd < 0) s.conns.erase(s.conns.begin() + (i - 1));
+
     if (ds.haveCount != s.lastHave) { s.lastHave = ds.haveCount; s.lastProgress = now; }
 
-    if (now - s.lastLog >= 5) {
+    if (x.seed) {
+        if (now - s.lastSeedLog >= 60) {
+            s.lastSeedLog = now;
+            logf_("  [%s] seeding: peers %d, uploaded %llu KB so far, %d KB/s", x.tag.c_str(), (int)s.conns.size(),
+                  (unsigned long long)(x.upBytes / 1024), s.curUpKB);
+        }
+    } else if (now - s.lastLog >= 5) {
         uint64_t kbps = (x.totalBytes - s.lastBytes) / 1024 / (uint64_t)(now - s.lastLog);
         logf_("  [%s] %u/%u pieces (%u%%), peers %d (ready %d, sending %d), %llu KB/s",
               x.tag.c_str(), ds.haveCount, t.numPieces, ds.haveCount * 100 / t.numPieces,
@@ -1141,5 +1332,5 @@ void Swarm::process(time_t now, fd_set& rf, fd_set& wf)
     }
 
     if (x.fatal) s.finish("write failed");
-    else if (ds.needLeft == 0) s.finish("complete");
+    else if (ds.needLeft == 0 && !x.seed) s.finish("complete");
 }
