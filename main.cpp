@@ -2294,7 +2294,7 @@ function applyStatic(){
   }
   $('f2back').textContent = T('f2_back');
 }
-function getJson(url){ return fetch(url).then(function(r){ if (!r.ok) throw new Error('lang'); return r.json(); }); }
+function getJson(url){ return fetch(url + '?t=' + Date.now()).then(function(r){ if (!r.ok) throw new Error('lang'); return r.json(); }); }
 function pickLang(){
   var pref = 'auto';
   try { pref = localStorage.getItem('lang') || 'auto'; } catch (e) {}
