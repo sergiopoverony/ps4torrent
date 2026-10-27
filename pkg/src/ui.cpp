@@ -29,7 +29,8 @@ extern "C" uint64_t sceKernelGetProcessTime(void);
 #define FRAME_HEIGHT  1080
 #define FRAME_DEPTH      4
 
-static const int FONT_PX   = 24;
+static const int FONT_PX   = 26;
+static const int FONT_FILES_PX = 22;   // мельче основного: только список файлов (имена и размеры)
 static const int ROW_H     = 40;    // чуть выше, чтобы под строкой поместилась полоска прогресса
 static const int BAR_H     = 4;
 static const int BAR_GAP   = 4;     // отступ снизу строки до полоски (разделяет соседние строки)
@@ -636,6 +637,17 @@ static bool fl_row_locked(int r)
     return true;
 }
 
+// Меняет размер шрифта на лету (и ширину ячейки). Нужен, чтобы список файлов был мельче остального экрана.
+static void set_font_px(int px)
+{
+    FT_Set_Pixel_Sizes(g_font, 0, px);
+    FT_UInt gi = FT_Get_Char_Index(g_font, 'M');
+    if (!FT_Load_Glyph(g_font, gi, FT_LOAD_DEFAULT)) {
+        int w = (int)(g_font->glyph->advance.x >> 6);
+        if (w > 0) g_cellW = w;
+    }
+}
+
 static int fl_visible() { return (FOOTER_Y - 10 - ROWS_Y) / ROW_H; }
 
 static bool fl_has_new()
@@ -706,14 +718,18 @@ static void draw_files()
     snprintf(cnt, sizeof(cnt), "%d / %d  %s", on, (int)g_flChk.size(), fmt_size(onBytes).c_str());
     put_center(cx, tr("tc_files_selected", "selected") + ": " + cnt, BANNER_TOP + 70, C_DIM, C_BG);
 
+    // Шапка и строки таблицы рисуем мелким шрифтом; правый край колонки размера остаётся там же, где был
+    const int bigCell = g_cellW;
+    set_font_px(FONT_FILES_PX);
+    const int colSize = ((COL_SPEED + W_SPEED) * bigCell) / g_cellW - W_SPEED;
     g_scene->FillRect(0, HEADER_Y, FRAME_WIDTH, ROW_H, C_HEAD);
     int hb = HEADER_Y + 25;
     put_right(COL_NUM, W_NUM, "#", hb, C_DIM, C_HEAD);
     put_left(COL_NAME, tr("tc_files_hdr_name", "File"), hb, C_DIM, C_HEAD);
-    put_right(COL_SPEED, W_SPEED, tr("tc_hdr_size", "Size"), hb, C_DIM, C_HEAD);
+    put_right(colSize, W_SPEED, tr("tc_hdr_size", "Size"), hb, C_DIM, C_HEAD);
 
     const int vis = fl_visible();
-    const int wName = COL_SPEED - COL_NAME - 5;
+    const int wName = colSize - COL_NAME - 5;
     for (int v = 0; v < vis; v++) {
         int ri = g_flTop + v;
         if (ri >= (int)g_flRows.size()) break;
@@ -730,7 +746,7 @@ static void draw_files()
             snprintf(cntb, sizeof(cntb), "  (%d)", (int)row.members.size());
             put_left(COL_NAME, st == 2 ? "[x]" : (st == 1 ? "[-]" : "[ ]"), base, fg, bg);
             put_left(COL_NAME + 4, fit(row.text + cntb, wName), base, fg, bg);
-            put_right(COL_SPEED, W_SPEED, fmt_size(row.size), base, fg, bg);
+            put_right(colSize, W_SPEED, fmt_size(row.size), base, fg, bg);
             continue;
         }
         bool chk = g_flChk[row.idx];
@@ -740,8 +756,10 @@ static void draw_files()
         put_right(COL_NUM, W_NUM, num, base, C_DIM, bg);
         put_left(COL_NAME, chk ? "[x]" : "[ ]", base, fg, bg);
         put_left(COL_NAME + 4, fit(row.text, wName), base, fg, bg);
-        put_right(COL_SPEED, W_SPEED, fmt_size(g_fl.files[row.idx].size), base, fg, bg);
+        put_right(colSize, W_SPEED, fmt_size(g_fl.files[row.idx].size), base, fg, bg);
     }
+    set_font_px(FONT_PX);                 // дальше (подсказки, подпись) снова основной шрифт
+    g_cellW = bigCell;
 
     static const int HINT_BASELINE   = FOOTER_Y + 25;
     static const int CREDIT_BASELINE = HINT_BASELINE + 32;
