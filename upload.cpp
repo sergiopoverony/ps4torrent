@@ -4,7 +4,7 @@
 
 const int UPLOAD_STEPS[7] = { 24, 32, 64, 128, 256, 512, 1024 };
 
-static std::atomic<bool> g_on(false);
+static std::atomic<bool> g_on(UPLOAD_DEFAULT_ON != 0);
 static std::atomic<int>  g_kb(UPLOAD_DEFAULT_KB);
 
 static double   g_tokens = 0;          // байт, которые можно отправить

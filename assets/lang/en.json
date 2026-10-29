@@ -108,6 +108,7 @@
 "tc_remove_title": "Remove this torrent?",
 "tc_remove_note": "Downloaded files stay on the drive unless you choose to delete them too",
 "tc_hint_select": "select",
+"tc_hint_seed": "seeding on/off",
 "tc_hint_toggle": "pause/resume",
 "tc_hint_remove": "remove",
 "tc_hdr_title": "Title",

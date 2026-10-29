@@ -6,6 +6,9 @@
 // Допустимые пределы скорости отдачи, КБ/с (семь ступеней; 32 по умолчанию).
 extern const int UPLOAD_STEPS[7];
 #define UPLOAD_DEFAULT_KB 32
+#ifndef UPLOAD_DEFAULT_ON
+#define UPLOAD_DEFAULT_ON 1          // отдача включена по умолчанию (с 1.8.4.0)
+#endif
 
 void upload_set(bool enabled, int limitKB);       // limitKB приводится к ближайшей ступени
 bool upload_enabled();
