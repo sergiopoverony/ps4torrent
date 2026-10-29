@@ -480,7 +480,9 @@ static void load_config()
     FILE* f = fopen(CONFIG_FILE, "r");
     if (!f) { logf_("config: no %s, using defaults", CONFIG_FILE); return; }
     char line[300];
-    bool cfgUpOn = false;
+    bool cfgUpOn = UPLOAD_DEFAULT_ON != 0;
+    bool cfgUpSeen = false;          // в файле есть upload и метка upload_v=2 (значение выбрано уже при отдаче «по умолчанию вкл.»)
+    int cfgUpVer = 0;
     int cfgUpKB = UPLOAD_DEFAULT_KB;
     while (fgets(line, sizeof(line), f)) {
         std::string l = trim(line);
@@ -505,11 +507,17 @@ static void load_config()
             g_resumeSession = !(val == "0" || val == "false" || val == "no" || val == "off");
         } else if (key == "upload") {
             cfgUpOn = (val == "1" || val == "true" || val == "yes" || val == "on");
+            cfgUpSeen = true;
+        } else if (key == "upload_v") {
+            cfgUpVer = atoi(val.c_str());
         } else if (key == "upload_kb") {
             cfgUpKB = atoi(val.c_str());
         }
     }
     fclose(f);
+    // До 1.8.4.0 отдача по умолчанию была выключена и "upload=0" записывался при любом сохранении настроек. С 1.8.4.0 она по
+    // умолчанию включена: старое значение без метки upload_v=2 не считаем выбором пользователя.
+    if (cfgUpSeen && cfgUpVer < 2) { if (!cfgUpOn) logf_("config: upload is now on by default (old setting from before 1.8.4.0 ignored)"); cfgUpOn = UPLOAD_DEFAULT_ON != 0; }
     upload_set(cfgUpOn, cfgUpKB);
 }
 
@@ -520,7 +528,7 @@ static void save_config()
     if (!f) { logf_("cannot write %s", CONFIG_FILE); return; }
     fprintf(f, "# ps4torrentd settings (rewritten when changed through the web page / API)\n");
     fprintf(f, "max_parallel=%d\nlisten_port=%d\nautostart=%d\nsave_to=%s\nresume_session=%d\n", g_maxParallel, g_listenPort, g_autostart ? 1 : 0, g_saveTo.load() == 1 ? "internal" : "usb", g_resumeSession.load() ? 1 : 0);
-    fprintf(f, "upload=%d\nupload_kb=%d\n", upload_enabled() ? 1 : 0, upload_limit_kb());
+    fprintf(f, "upload=%d\nupload_kb=%d\nupload_v=2\n", upload_enabled() ? 1 : 0, upload_limit_kb());
     if (!g_token.empty()) fprintf(f, "web_token=%s\n", g_token.c_str());
     fclose(f);
 }
@@ -1194,6 +1202,31 @@ static void memory_guard(time_t now)
 #define SEED_CONNS 6
 #endif
 
+// Раздачи, у которых отдачу выключили вручную (крест в приложении): хэши, файл LOG_DIR/noseed.txt.
+#define NOSEED_FILE LOG_DIR "/noseed.txt"
+static std::set<std::string> g_noSeed;
+static void noseed_load()
+{
+    FILE* f = fopen(NOSEED_FILE, "r");
+    if (!f) return;
+    char b[128];
+    while (fgets(b, sizeof(b), f)) {
+        std::string h = trim(b);
+        if (h.size() == 40) g_noSeed.insert(h);
+    }
+    fclose(f);
+    if (!g_noSeed.empty()) logf_("seeding turned off by the user for %d tasks", (int)g_noSeed.size());
+}
+static void noseed_save()
+{
+    std::string tmp = std::string(NOSEED_FILE) + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    for (std::set<std::string>::const_iterator i = g_noSeed.begin(); i != g_noSeed.end(); ++i) fprintf(f, "%s\n", i->c_str());
+    fclose(f);
+    rename(tmp.c_str(), NOSEED_FILE);
+}
+
 static void close_seed(Job* j, time_t now, const char* why)
 {
     Item* it = j->it;
@@ -1271,6 +1304,7 @@ static Item* pick_seed_candidate(time_t now)
     for (size_t i = 0; i < g_items.size(); i++) {
         Item* it = g_items[i];
         if (!it->complete || it->offline || it->seeding || now < it->seedRetryAt || it->selPending) continue;
+        if (g_noSeed.count(it->t.infoHashHex)) continue;              // отдачу выключили вручную
         if (!best) { best = it; continue; }
         if (it->seedPrio != best->seedPrio) { if (it->seedPrio > best->seedPrio) best = it; continue; }
         if (it->lastSeedEnd < best->lastSeedEnd) best = it;
@@ -1278,12 +1312,38 @@ static Item* pick_seed_candidate(time_t now)
     return best;
 }
 
+static bool seed_mem_hold(time_t now) { return !g_memStack.empty() || (g_memEventAt != 0 && now - g_memEventAt < MEM_EVENT_HOLD_S); }
+
+// Крест в приложении на завершённой раздаче: on = отдавать сейчас (вне очереди), off = не отдавать (запоминается).
+static void seed_toggle(Item* it, bool on, time_t now)
+{
+    const std::string& h = it->t.infoHashHex;
+    if (!on) {
+        g_noSeed.insert(h);
+        noseed_save();
+        for (size_t i = 0; i < g_seeds.size(); i++) if (g_seeds[i]->it == it) { close_seed(g_seeds[i], now, "stopped by the user"); break; }
+        logf_("command: seeding off for %s", it->title.c_str());
+        return;
+    }
+    if (g_noSeed.erase(h)) noseed_save();
+    it->seedRetryAt = 0;
+    it->seedPrio = now;                                              // первой в очереди
+    logf_("command: seeding on for %s", it->title.c_str());
+    if (!it->complete || it->seeding || !upload_enabled() || seed_mem_hold(now) || it->offline) return;
+    if ((int)g_seeds.size() >= SEED_MAX) {                          // все места заняты: уступает та, что отдаётся дольше всех
+        Job* oldest = g_seeds[0];
+        for (size_t i = 1; i < g_seeds.size(); i++) if (g_seeds[i]->t0 < oldest->t0) oldest = g_seeds[i];
+        close_seed(oldest, now, "turn passes to a task the user started");
+    }
+    start_seed(*it, now);
+}
+
 static void manage_seeds(time_t now)
 {
     static time_t last = 0;
     if (now == last) return;
     last = now;
-    const bool memHold = !g_memStack.empty() || (g_memEventAt != 0 && now - g_memEventAt < MEM_EVENT_HOLD_S);
+    const bool memHold = seed_mem_hold(now);
     if (!upload_enabled() || memHold) {
         if (!g_seeds.empty()) close_all_seeds(now, !upload_enabled() ? "upload is off" : "low memory");
         return;
@@ -1293,6 +1353,7 @@ static void manage_seeds(time_t now)
         Item* it = j->it;
         const char* why = NULL;
         if (!it->complete) why = "task is not complete";
+        else if (g_noSeed.count(it->t.infoHashHex)) why = "stopped by the user";
         else if (it->offline) why = "drive removed";
         else if (now % 15 == 0 && !seed_files_present(*it)) { why = "files are not on the drive any more"; it->seedRetryAt = now + 600; }
         else if (j->sw->finished()) why = j->sw->reason();
@@ -2154,10 +2215,10 @@ static void build_snapshot()
         char buf[560];
         snprintf(buf, sizeof(buf),
                  "%s{\"hash\":\"%s\",\"status\":\"%s\",\"size\":%llu,\"done\":%llu,\"pct\":%d,"
-                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"mem_paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"seeding\":%s,\"up_kb\":%d,\"root\":\"",
+                 "\"speed_kb\":%d,\"eta_s\":%lld,\"peers\":%d,\"paused\":%s,\"mem_paused\":%s,\"low_space\":%s,\"nfiles\":%u,\"nskip\":%u,\"seeding\":%s,\"seed_off\":%s,\"up_kb\":%d,\"root\":\"",
                  i ? "," : "", it.t.infoHashHex.c_str(), status_name(it),
                  (unsigned long long)item_size_bytes(it), (unsigned long long)done, pct,
-                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", it.memPaused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it), it.seeding ? "true" : "false", it.upKB);
+                 it.speedKB, eta, it.peers, it.paused ? "true" : "false", it.memPaused ? "true" : "false", item_low_space(it) ? "true" : "false", (unsigned)it.t.files.size(), item_skipped_files(it), it.seeding ? "true" : "false", g_noSeed.count(it.t.infoHashHex) ? "true" : "false", it.upKB);
         j += buf;
         j += json_escape(it.root) + "\",\"title\":\"" + json_escape(it.title) + "\"}";
     }
@@ -3337,6 +3398,12 @@ static void handle_client(int c)
             if (!((skip[k] >= '0' && skip[k] <= '9') || skip[k] == ',' || skip[k] == '-')) { respond_json_error(c, 400, "Bad Request", "skip: only digits, commas and dashes"); return; }
         queue_cmd("select", hash + " " + skip);
         respond(c, "application/json", "{\"ok\":true}");
+    } else if (path == "/api/seed") {
+        std::string hash = qget(query, "hash"), on = qget(query, "on");
+        if (hash.size() != 40 || !hex_ok(hash)) { respond_json_error(c, 400, "Bad Request", "seed needs the full 40-character hash"); return; }
+        if (on != "0" && on != "1") { respond_json_error(c, 400, "Bad Request", "on must be 0 or 1"); return; }
+        queue_cmd("seed", hash + " " + on);
+        respond(c, "application/json", "{\"ok\":true}");
     } else if (path == "/api/pause_all" || path == "/api/resume_all") {
         queue_cmd(path == "/api/pause_all" ? "pause_all" : "resume_all", "");
         respond(c, "application/json", "{\"ok\":true}");
@@ -3901,6 +3968,12 @@ static size_t apply_commands(time_t now)
         std::string hash = cmds[i].second;
         for (size_t k = 0; k < hash.size(); k++) if (hash[k] >= 'A' && hash[k] <= 'F') hash[k] = (char)(hash[k] - 'A' + 'a');
         if (direct_command(cmd, hash)) continue;                    // загрузка по ссылке
+        bool seedOn = false;
+        if (cmd == "seed") {                                        // аргумент "хэш 0|1"
+            size_t sp = hash.find(' ');
+            seedOn = sp != std::string::npos && hash.substr(sp + 1) == "1";
+            if (sp != std::string::npos) hash.erase(sp);
+        }
         Item* it = NULL;
         for (size_t k = 0; k < g_items.size(); k++)
             if (g_items[k]->t.infoHashHex.compare(0, hash.size(), hash) == 0) { it = g_items[k]; break; }
@@ -3917,7 +3990,10 @@ static size_t apply_commands(time_t now)
             it->retryAt = 0;
             logf_("command: resume %s", it->title.c_str());
         } else if (cmd == "delete" || cmd == "delete_files") {
+            if (g_noSeed.erase(it->t.infoHashHex)) noseed_save();   // добавят снова: отдача как у новой
             request_delete(it, cmd == "delete_files", now);
+        } else if (cmd == "seed") {
+            seed_toggle(it, seedOn, now);
         }
     }
     return cmds.size();
@@ -4314,6 +4390,7 @@ int main()
     snprintf(g_notifyIcon, sizeof(g_notifyIcon), "http://127.0.0.1:%d/notify.png", HTTP_PORT);      // иконка уведомлений (способ проверен на консоли)
     if (g_resumeSession.load()) load_session();
     direct_load();
+    noseed_load();
     if (g_saveTo.load() == 1) make_dirs(INTERNAL_ROOT);
     writer_start();
     if (!http_spawn()) {

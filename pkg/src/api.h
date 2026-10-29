@@ -12,6 +12,7 @@ bool api_refresh_status();
 // Пауза/продолжить одну раздачу или все сразу.
 bool api_pause(const std::string& hash);
 bool api_resume(const std::string& hash);
+bool api_seed(const std::string& hash, bool on);   // раздача завершённой: включить/выключить
 bool api_pause_all();
 bool api_resume_all();
 

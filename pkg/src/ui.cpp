@@ -928,7 +928,10 @@ static void draw_all()
     if (g_svc == SVC_FAILED)  hint = "{cross} " + tr("tc_hint_retry", "try again");
     else if (svcDown)         hint = "{cross} " + tr("tc_hint_start", "start the service");
     else if (g_svc == SVC_READY) {
-        hint = "{updown} " + tr("tc_hint_select", "select") + "   {cross} " + tr("tc_hint_toggle", "pause/resume");
+        bool selDone = g_sel < (int)g_status.items.size() && g_status.items[g_sel].status == "complete";
+        hint = "{updown} " + tr("tc_hint_select", "select");
+        if (!selDone) hint += "   {cross} " + tr("tc_hint_toggle", "pause/resume");
+        else if (g_status.upload && !g_status.items[g_sel].http) hint += "   {cross} " + tr("tc_hint_seed", "seeding on/off");
         if (g_sel < (int)g_status.items.size() && g_status.items[g_sel].nfiles > 1) hint += "   {square} " + tr("tc_hint_files", "files");
         hint += "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("btn_quit", "shut down");
     }
@@ -1068,7 +1071,14 @@ static void toggle_selected()
 {
     if (g_sel < 0 || g_sel >= (int)g_status.items.size()) return;
     const Item& it = g_status.items[g_sel];
-    if (it.status == "complete" || it.status == "offline") return;
+    if (it.status == "complete") {                 // завершённая раздача: крест включает/выключает её отдачу
+        if (it.http || !g_status.upload) return;
+        api_seed(it.hash, !it.seeding);
+        refresh_status();
+        g_redraw = 2;
+        return;
+    }
+    if (it.status == "offline") return;
 
     if (it.paused) api_resume(it.hash);
     else           api_pause(it.hash);

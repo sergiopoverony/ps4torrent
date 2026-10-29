@@ -108,6 +108,7 @@
 "tc_remove_title": "Удалить эту раздачу?",
 "tc_remove_note": "Файлы останутся на диске, если не удалять их тоже",
 "tc_hint_select": "выбор",
+"tc_hint_seed": "раздача вкл/выкл",
 "tc_hint_toggle": "пауза/продолжить",
 "tc_hint_remove": "удалить",
 "tc_hdr_title": "Название",

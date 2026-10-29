@@ -46,6 +46,8 @@ bool api_refresh_status()
         x.nfiles = (int)it["nfiles"].asInt(0);
         x.nskip = (int)it["nskip"].asInt(0);
         x.seeding = it["seeding"].asBool(false);
+        x.seedOff = it["seed_off"].asBool(false);
+        x.http = it["kind"].asStr() == "http";
         x.root = it["root"].asStr();
         x.title = it["title"].asStr();
         if (x.hash.empty()) continue;   // битая запись: пропускаем, а не падаем
@@ -98,6 +100,7 @@ static bool simple_cmd(const std::string& path)
 
 bool api_pause(const std::string& hash)  { return simple_cmd("/api/pause?hash=" + hash); }
 bool api_resume(const std::string& hash) { return simple_cmd("/api/resume?hash=" + hash); }
+bool api_seed(const std::string& hash, bool on) { return simple_cmd("/api/seed?hash=" + hash + (on ? "&on=1" : "&on=0")); }
 bool api_pause_all()  { return simple_cmd("/api/pause_all"); }
 bool api_resume_all() { return simple_cmd("/api/resume_all"); }
 

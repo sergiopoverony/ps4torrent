@@ -18,6 +18,8 @@ struct Item {
     int nfiles = 0;         // сколько файлов в раздаче
     int nskip = 0;          // сколько из них снято с загрузки
     bool seeding = false;   // завершённая раздача сейчас отдаётся пирам
+    bool seedOff = false;   // отдачу этой раздачи выключили вручную
+    bool http = false;      // загрузка по прямой ссылке (не торрент)
     std::string root;       // куда качается (для информации)
     std::string title;
 };
