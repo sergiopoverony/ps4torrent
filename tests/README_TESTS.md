@@ -27,7 +27,7 @@
 | Медленное удаление файлов (поток) | `python3 slowdel_test.py` (хук `/tmp/ft/unlink_cost`) | 8/8 |
 | Страница (Node) | `node page/jstest2.js`, `node page/jstest5.js`, `node page/jstest6.js`, `node page/jstest7.js`, `node page/jstest8.js` | 20/20, 34/34, 17/17, 20/20, 15/15 (страницу для них вырезать из `main.cpp` в `/tmp/page/script.js` и `/tmp/page/page.html`) |
 | Замена бесполезных пиров | `ft/mix_run.sh` (`mix_test.py` + `peers_mix.py`, бинарник `daemon_host`) | 4/4 |
-| Языки и выключение | `ft/lang_test.py` | 9/9 |
+| Языки (20 файлов) и выключение | `ft/lang_test.py` | 9/9 |
 | Автопауза при нехватке памяти | `ft/memguard_run.sh` (`memguard_test.py`, бинарник `daemon_memg`) | 21/21 |
 | Дубликаты | `ft/dup_test.py` | 9/9 |
 | Отдача и сидирование (пир качает у демона, лимит 32/128/256 КБ/с, выключение, перезапуск, отдача во время загрузки) | `ft/upload_test.py` (бинарник `daemon_sel`; одной копией; запускать как `python3 /tmp/ft/upload_test.py`) | 33/33 |

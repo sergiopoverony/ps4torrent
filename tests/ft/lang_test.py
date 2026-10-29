@@ -12,7 +12,9 @@ sh("pkill -9 -x %s; rm -rf usb0 usb1 internal log; mkdir -p usb0/torrents log; e
 subprocess.Popen("setsid ./%s > lang.out 2>&1 < /dev/null &" % BIN, shell=True, cwd=FT); time.sleep(2.5)
 s, ct, b = get("/lang/index.json")
 idx = json.loads(b)
-check("index.json is served WITHOUT the token and lists en and ru with names: %s" % idx, s == 200 and {x["code"]: x["name"] for x in idx} == {"en": "English", "ru": "Русский"})
+names = {x["code"]: x["name"] for x in idx}
+check("index.json is served WITHOUT the token and lists all 20 languages with names (en English, ru Русский, de Deutsch...): %d" % len(names),
+      s == 200 and len(names) == 20 and names.get("en") == "English" and names.get("ru") == "Русский" and names.get("de") == "Deutsch" and names.get("el") == "Ελληνικά")
 s, ct, b = get("/lang/ru.json")
 d = json.loads(b.decode("utf-8"))
 check("ru.json is valid UTF-8 JSON with the Russian texts (%s)" % ct, s == 200 and "json" in ct and d["btn_quit"] == "выключить" and d["_name"] == "Русский")
