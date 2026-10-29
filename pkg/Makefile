@@ -22,14 +22,15 @@ EXTRAFLAGS  := -O2
 # Версия приложения = версия службы (из ../version.h): приложение сравнивает их при запуске.
 APPVER      := $(shell sed -n 's/.*APP_VERSION "\(.*\)".*/\1/p' ../version.h)
 
+# Языки: один общий набор для службы и приложения лежит в ../assets/lang/<код>.json. Приложение читает из PKG
+# файлы assets/misc/lang_<код>.json, их копии делаются при сборке (новый язык = положить xx.json в ../assets/lang).
+# Должно стоять ДО ASSETS: ':=' раскрывается сразу (до 1.8.4.1 стояло ниже, и языки в PKG не попадали).
+LANGSRC     := $(wildcard ../assets/lang/*.json)
+LANGASSETS  := $(patsubst ../assets/lang/%.json,assets/misc/lang_%.json,$(LANGSRC))
+
 # Всё, что кладётся в PKG (/app0/assets/...). ELF службы копируется сюда из ../release (см. ниже).
 ASSETS      := assets/fonts/DejaVuSansMono.ttf assets/fonts/LICENSE-DejaVu.txt assets/images/title.png \
                assets/misc/ps4torrentd.elf $(LANGASSETS)
-
-# Языки: один общий набор для службы и приложения лежит в ../assets/lang/<код>.json. Приложение читает из PKG
-# файлы assets/misc/lang_<код>.json, их копии делаются при сборке (новый язык = положить xx.json в ../assets/lang).
-LANGSRC     := $(wildcard ../assets/lang/*.json)
-LANGASSETS  := $(patsubst ../assets/lang/%.json,assets/misc/lang_%.json,$(LANGSRC))
 
 # Системные модули для приложения (без libc.prx приложение сразу вылетает). Берутся из набора OpenOrbis.
 LIBMODULES  := sce_module/libc.prx sce_module/libSceFios2.prx
