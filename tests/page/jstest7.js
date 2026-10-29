@@ -64,8 +64,10 @@ const flush = async () => { for (let i = 0; i < 10; i++) await tick(); };
 
   t = mkctx({ language:'en-GB', languages:['en-GB'] }, {}, true); await flush();
   ok(t.els.cfgb.textContent === 'settings' && t.els.m.innerHTML.includes('paused: low memory') && t.els.m.innerHTML.includes('KB/s'), 'browser language en-GB -> English');
+  t = mkctx({ language:'ja-JP', languages:['ja-JP'] }, {}, true); await flush();
+  ok(t.els.cfgb.textContent === 'settings', 'language without a file (ja) -> English');
   t = mkctx({ language:'de-DE', languages:['de-DE'] }, {}, true); await flush();
-  ok(t.els.cfgb.textContent === 'settings', 'unknown language de -> English');
+  ok(t.els.cfgb.textContent === 'Einstellungen', 'browser language de-DE -> German (1.8.6.0)');
   t = mkctx({ language:'ru', languages:['ru'] }, { lang:'en' }, true); await flush();
   ok(t.els.cfgb.textContent === 'settings', 'manual choice (en) wins over the browser language');
   t = mkctx({ language:'en', languages:['en'] }, { lang:'xx' }, true); await flush();
