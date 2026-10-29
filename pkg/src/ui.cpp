@@ -80,10 +80,13 @@ static int      g_frameID = 0;
 static uint64_t g_lastTick = 0;
 static Image    g_banner;
 static bool     g_bannerOk = false;
+static Image    g_qrSbp, g_qrPaypal;     // QR для пожертвований (как в ps4hddtools): СБП для русского языка системы, PayPal иначе
+static bool     g_qrSbpOk = false, g_qrPaypalOk = false, g_qrTried = false;
 static int      g_bannerW  = 0;   // ширина на экране при высоте BANNER_H (с сохранением пропорций)
 static uint64_t g_lastRefresh = 0;
 
-enum Modal { MODAL_NONE, MODAL_DELETE, MODAL_QUIT, MODAL_FILES };
+enum Modal { MODAL_NONE, MODAL_DELETE, MODAL_QUIT, MODAL_FILES, MODAL_MENU, MODAL_DONATE };
+static int g_menuSel = 0;              // меню по Options: 0 поддержать проект, 1 выключить
 static Modal        g_modal = MODAL_NONE;
 static std::string  g_modalHash;
 static std::string  g_modalTitle;
@@ -529,9 +532,60 @@ static void draw_quit_modal()
 
 static void draw_files();
 
+// Меню по Options: «Поддержать проект» и «Выключить» (выключение раньше открывалось сразу по Options).
+static void draw_menu_modal()
+{
+    const int W = 760, H = 300;
+    draw_panel(W, H);
+    int cx = FRAME_WIDTH / 2;
+    int x0 = (FRAME_WIDTH - W) / 2, y0 = (FRAME_HEIGHT - H) / 2;
+    put_center(cx, tr("tc_menu_title", "Menu"), y0 + 50, C_TEXT, C_PANEL);
+    const char* keys[2] = { "tc_menu_donate", "btn_quit" };
+    const char* defs[2] = { "Support the project", "shut down" };
+    for (int i = 0; i < 2; i++) {
+        int top = y0 + 86 + i * 64;
+        bool sel = (i == g_menuSel);
+        Color bg = sel ? C_SEL : C_PANEL;
+        if (sel) g_scene->FillRect(x0 + 40, top, W - 80, 52, C_SEL);
+        Color fg = (i == 1) ? C_RED : C_TEXT;
+        if (i == 1 && g_svc != SVC_READY) fg = C_DIMMER;              // службы нет: выключать нечего
+        put_center(cx, tr(keys[i], defs[i]), top + 35, fg, bg);
+    }
+    put_center_rich(cx, "{updown} " + tr("tc_hint_select", "select") + "   {cross} " + tr("tc_hint_ok", "OK") + "   {circle} " + tr("tc_back", "back"),
+                    y0 + H - 26, C_DIM, C_PANEL);
+}
+
+// Окно с QR-кодом для пожертвований: язык системы русский - СБП, любой другой - PayPal. Картинки читаются при первом открытии.
+static void draw_donate_modal()
+{
+    if (!g_qrTried) {
+        g_qrTried = true;
+        g_qrSbpOk = g_qrSbp.load("/app0/assets/images/qr_sbp.png");
+        g_qrPaypalOk = g_qrPaypal.load("/app0/assets/images/qr_paypal.png");
+    }
+    bool ru = i18n_system_lang() == "ru";
+    const Image& qr = ru ? g_qrSbp : g_qrPaypal;
+    bool ok = ru ? g_qrSbpOk : g_qrPaypalOk;
+    const int W = 520, H = 600;
+    draw_panel(W, H);
+    int cx = FRAME_WIDTH / 2;
+    int x0 = (FRAME_WIDTH - W) / 2, y0 = (FRAME_HEIGHT - H) / 2;
+    put_center(cx, tr("tc_menu_donate", "Support the project"), y0 + 50, C_TEXT, C_PANEL);
+    const int qs = 440;
+    if (ok) {
+        g_scene->FillRect(x0 + (W - qs) / 2 - 10, y0 + 76, qs + 20, qs + 20, C_TEXT);   // белое поле вокруг кода
+        draw_image(qr, x0 + (W - qs) / 2, y0 + 86, qs, qs, C_TEXT);
+    } else {
+        put_center(cx, tr("tc_donate_missing", "QR code not found"), y0 + H / 2, C_DIM, C_PANEL);
+    }
+    put_center_rich(cx, "{circle} " + tr("tc_back", "back"), y0 + H - 26, C_DIM, C_PANEL);
+}
+
 static void draw_modal()
 {
     if (g_modal == MODAL_QUIT) { draw_quit_modal(); return; }
+    if (g_modal == MODAL_MENU) { draw_menu_modal(); return; }
+    if (g_modal == MODAL_DONATE) { draw_donate_modal(); return; }
     if (g_modal == MODAL_FILES) { draw_files(); return; }
     if (g_modal != MODAL_DELETE) return;
 
@@ -933,7 +987,7 @@ static void draw_all()
         if (!selDone) hint += "   {cross} " + tr("tc_hint_toggle", "pause/resume");
         else if (g_status.upload && !g_status.items[g_sel].http) hint += "   {cross} " + tr("tc_hint_seed", "seeding on/off");
         if (g_sel < (int)g_status.items.size() && g_status.items[g_sel].nfiles > 1) hint += "   {square} " + tr("tc_hint_files", "files");
-        hint += "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("btn_quit", "shut down");
+        hint += "   {triangle} " + tr("tc_hint_remove", "remove") + "   {options} " + tr("tc_hint_menu", "menu");
     }
     if (!hint.empty() && g_modal == MODAL_NONE) put_center_rich(FRAME_WIDTH / 2, hint, HINT_BASELINE, C_DIM, C_BG);
 
@@ -1190,6 +1244,17 @@ void ui_pump()
         }
         if (g_flSel < g_flTop) g_flTop = g_flSel;
         if (g_flSel >= g_flTop + fl_visible_rows()) g_flTop = g_flSel - fl_visible_rows() + 1;
+    } else if (g_modal == MODAL_MENU) {
+        if (step_repeat(up, upSince, upLast, now) && g_menuSel > 0)   { g_menuSel--; g_redraw = 2; }
+        if (step_repeat(down, downSince, downLast, now) && g_menuSel < 1) { g_menuSel++; g_redraw = 2; }
+        if (circle || options) { g_modal = MODAL_NONE; g_redraw = 2; }
+        else if (cross) {
+            if (g_menuSel == 0) { g_modal = MODAL_DONATE; g_redraw = 2; }
+            else if (g_svc == SVC_READY) { g_modal = MODAL_QUIT; g_redraw = 2; }
+        }
+    } else if (g_modal == MODAL_DONATE) {
+        upSince = downSince = 0;
+        if (circle || cross || options) { g_modal = MODAL_NONE; g_redraw = 2; }
     } else if (g_modal == MODAL_QUIT) {
         upSince = downSince = 0;
         if (cross) {
@@ -1198,8 +1263,10 @@ void ui_pump()
             g_redraw = 2;
         } else if (circle) { g_modal = MODAL_NONE; g_redraw = 2; }
     } else {
-        if (options && g_svc == SVC_READY) {
-            g_modal = MODAL_QUIT;
+        if (options) {                       // меню: поддержать проект / выключить
+            g_modal = MODAL_MENU;
+            g_menuSel = 0;
+            upSince = downSince = 0;
             g_redraw = 2;
         } else if (cross && svc_can_start()) {
             logf_("svc: start requested from the gamepad");

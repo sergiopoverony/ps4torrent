@@ -2,7 +2,7 @@ const vm = require('vm'), fs = require('fs');
 const script = fs.readFileSync('/tmp/page/script.js', 'utf8');
 let fakeNow = 1000000, results = [];
 const ok = (c, m) => { results.push(c); console.log((c ? 'PASS ' : 'FAIL ') + m); };
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','nt','ni','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', files:[], querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','nt','ni','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk','donb','support','supportImg','supportX'].forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', files:[], querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
 const writes = []; let curHtml = '';
 Object.defineProperty(els.m, 'innerHTML', { get(){ return curHtml; }, set(v){ writes.push(v); curHtml = v; } });
 const calls = []; let respondDelay = 0, failNext = false, resolvers = [];

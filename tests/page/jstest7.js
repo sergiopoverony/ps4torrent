@@ -24,7 +24,7 @@ const unused = Object.keys(en).filter(k => !used.has(k) && k !== '_name' && !/^(
 ok(unused.length === 0, 'no unused keys in en.json: ' + unused.join(','));
 
 function mkctx(nav, stored, confirmAns){
-  const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk']
+  const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk','donb','support','supportImg','supportX']
     .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
   const store = Object.assign({}, stored), calls = [];
   const stat = []; html.replace(/<(\w+)([^>]*?)data-i18n="([^"]+)"([^>]*)>/g, (m, tag, a, key, b) => {
