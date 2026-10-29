@@ -14,5 +14,8 @@ void i18n_init(const char* assetDir = "/app0/assets/misc");
 // сам ограничивает частоту попыток и после успеха ничего не делает.
 void i18n_tick(bool serverOk, uint64_t nowUs);
 
+// Код языка системы PS4 ("ru", "en", "de"...), даже если файла для него нет.
+std::string i18n_system_lang();
+
 // Текст по ключу; если в языковом файле ключа нет, возвращает def.
 std::string tr(const char* key, const char* def);

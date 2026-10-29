@@ -12,7 +12,8 @@
 extern "C" int sceSystemServiceParamGetInt(int paramId, int* value);
 static const int PARAM_ID_LANG = 1;
 
-static std::string g_want = "en";     // какой файл просим: "ru" или "en"
+static std::string g_want = "en";
+static std::string g_sys = "en";      // язык системы (первый вариант из lang_candidates)     // какой файл просим: "ru" или "en"
 static bool        g_loaded = false;  // true: либо загрузили, либо решили остаться на английском
 static uint64_t    g_lastTryUs = 0;
 static std::map<std::string, std::string> g_strings;
@@ -86,6 +87,7 @@ void i18n_init(const char* assetDir)
     int r = sceSystemServiceParamGetInt(PARAM_ID_LANG, &id);
     if (r != 0) id = -1;
     std::vector<std::string> cands = lang_candidates(id);
+    g_sys = cands[0];
     logf_("i18n: system language id %d (rc 0x%08X), candidates: %s%s", id, (unsigned)r,
           cands[0].c_str(), cands.size() > 1 ? (" , " + cands[1]).c_str() : "");
 
@@ -124,3 +126,5 @@ std::string tr(const char* key, const char* def)
     if (it != g_strings.end() && !it->second.empty()) return it->second;
     return def;
 }
+
+std::string i18n_system_lang() { return g_sys; }

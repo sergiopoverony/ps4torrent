@@ -6,7 +6,7 @@ const dir = '/tmp/daemon/ps4torrentd/assets/lang/';
 const results = []; const ok = (c, m) => { results.push(c); console.log((c ? 'PASS ' : 'FAIL ') + m); };
 const GB = 1024 ** 3;
 let nowMs = 1e6; const timers = [];
-const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk']
+const els = {}; ['sum','m','msg','warn','cfg','up','cfgb','cfgs','mp','lp','cfgi','allgo','allstop','as','rs','ft','dlg','dfiles','dsel','dinfo','dwarn','dstart','dgo','dcancel','dlg2','f2title','f2info','f2warn','f2list','f2all','f2none','f2go','f2cancel','f2back','lng','quitb','urlb','ul','ulk','donb','support','supportImg','supportX']
   .forEach(k => els[k] = { style:{}, dataset:{}, textContent:'', value:'', innerHTML:'', files:[], checked:false, disabled:false, options:[], selectedIndex:0, querySelectorAll(){ return []; }, querySelector(){ return { textContent:'' }; }, scrollTop:0 });
 // живые элементы списка: разбираем data-lv из текущего innerHTML
 let live = [];

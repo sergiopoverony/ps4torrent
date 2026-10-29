@@ -108,6 +108,7 @@ void operator delete[](void* p, size_t) noexcept { heap_del(p); }
 extern "C" {
 extern const unsigned char ps4_favicon_start[], ps4_favicon_end[];
 extern const unsigned char ps4_logo_start[], ps4_logo_end[];
+extern "C" const unsigned char ps4_qr_sbp_start[], ps4_qr_sbp_end[], ps4_qr_paypal_start[], ps4_qr_paypal_end[];
 struct LangFile { const char* code; const unsigned char* start; const unsigned char* end; };   // вшитые файлы языков (создаёт mklang.sh)
 extern const LangFile g_langFiles[];
 extern const int g_langCount;
@@ -2302,6 +2303,11 @@ option:checked,option:hover{background:#25344a;color:var(--fg)}
 .fl input{width:auto;margin-top:3px}.fl .sz{margin-left:auto;white-space:nowrap;padding-left:10px}
 footer{padding:16px 14px 22px;text-align:center;color:var(--mut);font-size:12px}
 button:disabled{opacity:.55;cursor:default}
+.support{position:fixed;left:14px;bottom:14px;z-index:5;width:210px;background:var(--card);border:1px solid #25344a;border-radius:12px;padding:12px 12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.55);display:none;text-align:center}
+.support.on{display:block}
+.support b{display:block;margin:0 22px 8px 0;font-size:14px;text-align:left}
+.support img{width:100%;display:block;border-radius:8px;background:#fff}
+.support .x{position:absolute;top:6px;right:8px;width:26px;height:26px;border-radius:50%;border:0;background:#25344a;color:var(--fg);font-size:16px;line-height:1;cursor:pointer;padding:0}
 #msg{margin:0 14px 10px;padding:8px 12px;border-radius:8px;background:var(--card);display:none}
 #cfg{margin:0 14px 10px;display:none}
 #cfg label{display:inline-flex;gap:6px;align-items:center;margin-right:14px}
@@ -2312,7 +2318,7 @@ button:disabled{opacity:.55;cursor:default}
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="urlb" data-i18n="btn_add_url">+ link</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
-<button id="cfgb" data-i18n="btn_settings">settings</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
+<button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
 <div id="msg"></div>
 <div id="cfg" class="c">
@@ -2341,6 +2347,7 @@ button:disabled{opacity:.55;cursor:default}
 <div class="row"><button id="f2all" data-i18n="f2_all">Select all</button><button id="f2none" data-i18n="f2_none">Deselect all</button><button id="f2back" data-i18n="f2_back">Back</button><button id="f2go" class="go">Start download</button><button id="f2cancel" class="dng" data-i18n="dlg_cancel">Cancel</button></div>
 </div></div>
 <main id="m"><div class="c" data-i18n="loading">loading...</div></main>
+<div class="support" id="support"><button class="x" id="supportX" aria-label="x" title="x">&times;</button><b data-i18n="donate_title">Support the project</b><img id="supportImg" src="/qr_paypal.png" alt="QR"></div>
 <footer id="ft">ps4torrent v1.0 Created by SergioPoverony and Mr.Claude</footer>
 <script>
 var TK = '';
@@ -2383,7 +2390,7 @@ function setLang(then){
   var jobs = [getJson('/lang/en.json').then(function(d){ LE = d; })];
   if (LCODE !== 'en') jobs.push(getJson('/lang/' + LCODE + '.json').then(function(d){ LD = d; }));
   else LD = {};
-  Promise.all(jobs).catch(function(){}).then(function(){ applyStatic(); if (then) then(); });
+  Promise.all(jobs).catch(function(){}).then(function(){ applyStatic(); if (typeof updateSupport === 'function') updateSupport(); if (then) then(); });
 }
 function initLang(then){
   getJson('/lang/index.json').then(function(l){ LANGS = l; }).catch(function(){ LANGS = [{ code: 'en', name: 'English' }]; }).then(function(){ setLang(then); });
@@ -2928,6 +2935,20 @@ $('urlb').onclick = function(){
   }).catch(function(){ say(T('noanswer'), true); });
 };
 
+// Пожертвование: окошко с QR-кодом (страница на русском: СБП, иначе PayPal). Само показывается один раз через 15 секунд,
+// пока его не закрыли крестиком (запоминается в браузере); кнопка «пожертвовать» открывает его всегда.
+var supportOpen = false, supportClosedBefore = false;
+try { supportClosedBefore = localStorage.getItem('supportClosed') === '1'; } catch (e) {}
+function updateSupport(){
+  var ru = LCODE === 'ru';
+  $('supportImg').src = ru ? '/qr_sbp.png' : '/qr_paypal.png';
+  $('supportImg').alt = ru ? 'QR СБП' : 'QR PayPal';
+  $('support').className = 'support' + (supportOpen ? ' on' : '');
+}
+setTimeout(function(){ if (!supportClosedBefore) { supportOpen = true; updateSupport(); } }, 15000);
+$('supportX').onclick = function(){ supportOpen = false; supportClosedBefore = true; try { localStorage.setItem('supportClosed', '1'); } catch (e) {} updateSupport(); };
+$('donb').onclick = function(){ supportOpen = true; updateSupport(); };
+
 // Все задачи сразу
 $('allgo').onclick = function(){ api('/api/resume_all').then(function(){ load(); }); };
 $('allstop').onclick = function(){ api('/api/pause_all').then(function(){ load(); }); };
@@ -3329,6 +3350,9 @@ static void handle_client(int c)
     // Картинки отдаём без пароля (как и саму страницу): значок сайта, логотип и иконка уведомлений.
     if (path == "/favicon.ico") { respond_bytes(c, "image/x-icon", ps4_favicon_start, (size_t)(ps4_favicon_end - ps4_favicon_start)); return; }
     if (path == "/logo.png") { respond_bytes(c, "image/png", ps4_logo_start, (size_t)(ps4_logo_end - ps4_logo_start)); return; }
+    // QR-коды для пожертвований: СБП (страница на русском) и PayPal (остальные языки)
+    if (path == "/qr_sbp.png") { respond_bytes(c, "image/png", ps4_qr_sbp_start, (size_t)(ps4_qr_sbp_end - ps4_qr_sbp_start)); return; }
+    if (path == "/qr_paypal.png") { respond_bytes(c, "image/png", ps4_qr_paypal_start, (size_t)(ps4_qr_paypal_end - ps4_qr_paypal_start)); return; }
     if (path == "/notify.png") { respond_bytes(c, "image/png", ps4_notify_start, (size_t)(ps4_notify_end - ps4_notify_start)); return; }
     // Файлы языков отдаём без пароля (в них только тексты интерфейса): /lang/index.json (список) и /lang/<код>.json.
     if (path.compare(0, 6, "/lang/") == 0) {

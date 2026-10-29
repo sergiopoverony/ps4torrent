@@ -30,6 +30,7 @@ LANGASSETS  := $(patsubst ../assets/lang/%.json,assets/misc/lang_%.json,$(LANGSR
 
 # Всё, что кладётся в PKG (/app0/assets/...). ELF службы копируется сюда из ../release (см. ниже).
 ASSETS      := assets/fonts/DejaVuSansMono.ttf assets/fonts/LICENSE-DejaVu.txt assets/images/title.png \
+               assets/images/qr_sbp.png assets/images/qr_paypal.png \
                assets/misc/ps4torrentd.elf $(LANGASSETS)
 
 # Системные модули для приложения (без libc.prx приложение сразу вылетает). Берутся из набора OpenOrbis.
