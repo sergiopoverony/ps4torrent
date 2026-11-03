@@ -14,11 +14,19 @@
 * Убрал .torrent из папки вручную -> раздача забывается (скачанные файлы остаются).
 * Положил готовый .torrent заново -> качается заново (файлы пересчитываются и докачиваются).
 
-## Сборка и отправка (Lubuntu / Linux с ps4-payload-sdk)
+## Сборка (Linux / WSL)
+
+Служба (нужен ps4-payload-sdk):
 
     export PS4_PAYLOAD_SDK=/opt/ps4-payload-sdk
     make
-    make send PS4_HOST=192.168.0.24        # порт по умолчанию 9090 (BinLoader GoldHEN)
+
+PKG-приложение вместе со службой (нужен ещё OpenOrbis PS4 Toolchain):
+
+    export OO_PS4_TOOLCHAIN=/путь/к/OpenOrbis-PS4-Toolchain
+    cd pkg && make full
+
+Готовые PKG выкладываются на странице Releases.
 
 ## Отдача (сидирование), версия 1.8.1.0
 
