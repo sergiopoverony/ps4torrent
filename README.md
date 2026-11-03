@@ -1,11 +1,9 @@
 # ps4torrent
-Torrent client for PS4 under (jalibrake)
+BitTorrent client for jailbroken PS4 (GoldHEN).
 
-The main component is the torrent payload. It runs in the background and is managed via a web interface on port 8787.
-
-Supports adding torrents, activation, and resuming downloads.
-The payload is operational and can be set to launch automatically on startup.
-All downloading and processing take place on removable media (USB drive or HDD).
+A background service (payload) downloads torrents to a USB drive or the internal HDD and is controlled from a web page
+on port 8787 or from the on-screen PKG app. Downloads resume after a restart, the console does not sleep while downloading,
+finished torrents can be seeded, and direct http:// links can be downloaded as well.
 
 /mnt/usbN/torrents/             Place .torrent files here (only this level is scanned)
 /mnt/usbN/torrents/downloads/   Downloads go here
@@ -18,10 +16,8 @@ Needs [ps4-payload-dev/sdk](https://github.com/ps4-payload-dev/sdk) (with libc++
 
     export PS4_PAYLOAD_SDK=/path/to/sdk
     make
-    # send to the console (GoldHEN payload loader, port 9090):
-    $PS4_PAYLOAD_SDK/bin/orbis-deploy -h <PS4 IP> -p 9090 ps4torrentd.elf
 
-A prebuilt payload is in `release/ps4torrentd.elf`. After it starts, open `http://<PS4 IP>:8787/`.
+A prebuilt payload is in `release/ps4torrentd.elf`. Ready-made PKG files are on the Releases page.
 
 ## PKG app
 
