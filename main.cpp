@@ -2924,10 +2924,10 @@ $('dgo').onclick = function(){
 // любой другой файл качается напрямую.
 function b64buf(s){ var bin = atob(s), u = new Uint8Array(bin.length); for (var k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k); return u.buffer; }
 $('magb').onclick = function(){
-  var m = prompt(T('magnet_prompt'), 'magnet:?');
+  var m = prompt(T('magnet_prompt'), '');
   if (!m) return;
   m = m.trim();
-  if (!m || m === 'magnet:?') return;
+  if (!m) return;
   api('/api/add_magnet?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }).then(function(d){
     say(!d.ok ? (d.error || T('failed')) : (d.duplicate ? T('magnet_dup') : T('magnet_queued')), !d.ok || d.duplicate);
     load(true);

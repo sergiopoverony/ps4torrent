@@ -68,6 +68,7 @@ bool magnet_parse(const std::string& uri, Magnet& m, std::string& err)
     size_t b = uri.size();
     while (b > a && isspace((unsigned char)uri[b - 1])) b--;
     std::string u = uri.substr(a, b - a);
+    if (u.size() > 3 && strncasecmp(u.c_str(), "xt=", 3) == 0) u = "magnet:?" + u;   // ссылка без начала: xt=urn:btih:...&tr=...
     if (u.size() < 8 || strncasecmp(u.c_str(), "magnet:?", 8) != 0) { err = "not a magnet link"; return false; }
     bool have = false;
     size_t i = 8;

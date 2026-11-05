@@ -171,8 +171,8 @@ check("renamed to .bad", wait(lambda: os.path.exists(I + "/broken.magnet.bad") a
 
 print("== a file with several links (any name), one per line, and the page button")
 h4 = reg("Big8M.torrent"); h5 = reg("Game One.torrent")
-open(I + "/games.magnet", "w").write("# my list\n" + magnet(h4, name="Big") + "\n\n" + h5.hex().upper() + "\nnot a link\n")
-check("the line with a tracker becomes a torrent", wait(lambda: os.path.exists(I + "/Big8M.torrent"), 40))
+open(I + "/games.magnet", "w").write("# my list\n" + magnet(h4, name="Big").replace("magnet:?", "") + "\n\n" + h5.hex().upper() + "\nnot a link\n")
+check("the line with a tracker (written without the leading magnet:?) becomes a torrent", wait(lambda: os.path.exists(I + "/Big8M.torrent"), 40))
 check("the bare-hash line is queued as its own request (no tracker here: the default one is unreachable, so it waits)", wait(lambda: os.path.exists("%s/%s.magnet" % (I, h5.hex())), 10))
 check("the list file is gone", not os.path.exists(I + "/games.magnet") and not os.path.exists("%s/%s.magnet" % (I, h4.hex())))
 check("log reports 2 requests taken, 1 bad line", "games.magnet: 2 request(s) taken, 1 bad line(s)" in log())
