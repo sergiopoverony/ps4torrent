@@ -64,6 +64,8 @@
 #include "tracker.h"
 #include "upload.h"
 #include "direct.h"
+#include "magnet.h"
+#include "metadata.h"
 
 #ifndef USB_BASE
 #define USB_BASE "/mnt/usb"          // /mnt/usb0, /mnt/usb1, ...
@@ -1925,11 +1927,9 @@ static bool usb_mount_writable(const std::string& mp)
 static bool is_internal_root(const std::string& r);
 static uint64_t low_reserve(const std::string& root);
 
-static void scan_usb(time_t now)
+// Места хранения: флешки /mnt/usbN/torrents и (если папка есть) внутренняя память консоли.
+static std::vector<std::string> storage_roots()
 {
-    std::set<std::string> present;
-
-    // Места хранения: флешки /mnt/usbN/torrents и (если папка есть) внутренняя память консоли.
     std::vector<std::string> roots;
     for (int i = 0; i < MAX_USB; i++) {
         char rootBuf[96];
@@ -1937,6 +1937,15 @@ static void scan_usb(time_t now)
         if (is_dir(rootBuf)) roots.push_back(rootBuf);
     }
     if (is_dir(INTERNAL_ROOT)) roots.push_back(INTERNAL_ROOT);
+    return roots;
+}
+
+static void scan_usb(time_t now)
+{
+    std::set<std::string> present;
+
+    // Места хранения: флешки /mnt/usbN/torrents и (если папка есть) внутренняя память консоли.
+    std::vector<std::string> roots = storage_roots();
 
     for (size_t ri = 0; ri < roots.size(); ri++) {
         const std::string root = roots[ri];
@@ -2317,6 +2326,7 @@ button:disabled{opacity:.55;cursor:default}
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="urlb" data-i18n="btn_add_url">+ link</button>
+<button id="magb" data-i18n="btn_magnet">+ magnet</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
 <button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
@@ -2913,6 +2923,16 @@ $('dgo').onclick = function(){
 // Добавление по ссылке http://: консоль сама открывает ссылку. .torrent идёт обычным путём (окно выбора места и файлов),
 // любой другой файл качается напрямую.
 function b64buf(s){ var bin = atob(s), u = new Uint8Array(bin.length); for (var k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k); return u.buffer; }
+$('magb').onclick = function(){
+  var m = prompt(T('magnet_prompt'), '');
+  if (!m) return;
+  m = m.trim();
+  if (!m) return;
+  api('/api/add_magnet?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }).then(function(d){
+    say(!d.ok ? (d.error || T('failed')) : (d.duplicate ? T('magnet_dup') : T('magnet_queued')), !d.ok || d.duplicate);
+    load(true);
+  }).catch(function(){ say(T('failed'), true); });
+};
 $('urlb').onclick = function(){
   var url = prompt(T('url_prompt'), 'http://');
   if (!url) return;
@@ -3287,6 +3307,263 @@ static void handle_add(int c, const std::string& query, const std::string& body)
     respond(c, "application/json", "{\"ok\":true,\"file\":\"" + json_escape(finalName) + "\",\"root\":\"" + json_escape(root) + "\",\"autostart\":" + (g_autostart ? "true" : "false") + ",\"started\":" + (started ? "true" : "false") + "}");
 }
 
+// ---------------------------------------------------------------- Magnet-ссылки
+// Запрос: /api/add_magnet кладёт в папку накопителя файл <хэш>.magnet (одна строка: сама ссылка). Фоновый поток берёт такие файлы,
+// по трекеру находит пиров, получает у них описание раздачи (BEP 9), собирает из него обычный .torrent (рядом, в той же папке) и
+// удаляет .magnet. Дальше работает прежнее сканирование. Нет сети или пиров - файл остаётся и пробуется снова (всё реже).
+// Наличие <хэш>.magnet = «запрос ждёт»; когда его нет, а раздача в списке, запрос выполнен.
+struct MagState { int fails = 0; time_t nextTry = 0; std::string err; bool fetching = false; };
+static pthread_mutex_t g_magMu = PTHREAD_MUTEX_INITIALIZER;
+static std::map<std::string, MagState> g_mag;      // путь .magnet -> состояние (под g_magMu)
+static std::atomic<bool> g_magWake(false);
+static pthread_t g_magThread;
+static bool g_magStarted = false;
+
+static bool mag_quitting() { return g_quit.load(); }
+
+static bool mag_read(const std::string& path, std::string& out, size_t cap = 4096)
+{
+    out.clear();
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char b[512];
+    size_t n;
+    while (out.size() < cap && (n = fread(b, 1, sizeof(b), f)) > 0) out.append(b, n);
+    fclose(f);
+    return true;
+}
+
+static bool mag_is_hash_name(const std::string& fileName)
+{
+    if (fileName.size() != 47 || fileName.compare(40, 7, ".magnet") != 0) return false;
+    for (int i = 0; i < 40; i++) {
+        char c = fileName[(size_t)i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+// Файл .magnet с любым именем (например, games.magnet): в каждой строке ссылка magnet:?... или просто хэш (40 hex).
+// Из каждой строки делается свой запрос <хэш>.magnet, сам файл после этого удаляется (если ни одной годной строки нет - .bad).
+static void mag_import(const std::string& root, const std::string& fileName)
+{
+    std::string path = root + "/" + fileName, text;
+    if (!mag_read(path, text, 256 * 1024)) return;
+    int good = 0, bad = 0;
+    size_t i = 0;
+    while (i <= text.size()) {
+        size_t e = text.find('\n', i);
+        if (e == std::string::npos) e = text.size();
+        std::string line = trim(text.substr(i, e - i));
+        i = e + 1;
+        if (line.empty() || line[0] == '#') continue;
+        if (line.size() == 40 && line.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) line = "magnet:?xt=urn:btih:" + line;
+        Magnet m;
+        std::string err;
+        if (line.size() > 2000 || !magnet_parse(line, m, err)) { bad++; continue; }
+        good++;
+        std::string dst = root + "/" + m.hex + ".magnet";
+        struct stat sb;
+        if (stat(dst.c_str(), &sb) == 0) continue;
+        std::string tmp = dst + ".tmp";
+        FILE* f = fopen(tmp.c_str(), "wb");
+        if (!f) continue;
+        bool w = fwrite(line.data(), 1, line.size(), f) == line.size() && fputc('\n', f) != EOF;
+        w = (fclose(f) == 0) && w;
+        if (!w || rename(tmp.c_str(), dst.c_str()) != 0) { unlink(tmp.c_str()); good--; }
+    }
+    logf_("magnet: %s: %d request(s) taken, %d bad line(s)", fileName.c_str(), good, bad);
+    if (good > 0 && bad == 0) unlink(path.c_str());
+    else if (good > 0) { unlink(path.c_str()); }
+    else rename(path.c_str(), (path + ".bad").c_str());
+    g_magWake = true;
+}
+
+// Собирает .torrent из полученного описания и кладёт в root. true: файл сохранён (name - его имя).
+static bool mag_store_torrent(const std::string& root, const Magnet& m, const std::string& info, std::string& name, std::string& err)
+{
+    std::string data = magnet_build_torrent(info, m.trackers);
+    static volatile unsigned seq = 0;
+    std::string tmp = root + "/.magnet." + std::to_string(__sync_add_and_fetch(&seq, 1)) + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) { err = "cannot write to the drive"; return false; }
+    bool w = fwrite(data.data(), 1, data.size(), f) == data.size();
+    w = (fclose(f) == 0) && w;
+    if (!w) { unlink(tmp.c_str()); err = "write to the drive failed"; return false; }
+    Torrent t;
+    bool loaded = false;
+    try { loaded = load_torrent(tmp.c_str(), t, err); }
+    catch (const std::exception&) { unlink(tmp.c_str()); err = "not enough memory to load this torrent"; return false; }
+    if (!loaded) { unlink(tmp.c_str()); err = "bad metadata: " + err; return false; }
+    if (t.infoHashHex != m.hex) { unlink(tmp.c_str()); err = "info hash mismatch"; return false; }
+    std::string fn = safe_torrent_name(t.name), base = fn.substr(0, fn.size() - 8);
+    for (int n = 2; n < 100; n++) {
+        struct stat sb;
+        if (stat((root + "/" + fn).c_str(), &sb) != 0) break;
+        char suffix[24];
+        snprintf(suffix, sizeof(suffix), " (%d)", n);
+        fn = base + suffix + ".torrent";
+    }
+    if (rename(tmp.c_str(), (root + "/" + fn).c_str()) != 0) { unlink(tmp.c_str()); err = "cannot save the file"; return false; }
+    pthread_mutex_lock(&g_addMu);
+    g_recentAdds[t.infoHashHex] = time(NULL);
+    pthread_mutex_unlock(&g_addMu);
+    name = fn;
+    return true;
+}
+
+static void mag_process(const std::string& root, const std::string& fileName, time_t now)
+{
+    std::string path = root + "/" + fileName;
+    MagState st;
+    pthread_mutex_lock(&g_magMu);
+    st = g_mag[path];
+    pthread_mutex_unlock(&g_magMu);
+    if (now < st.nextTry) return;
+
+    std::string text, err;
+    Magnet m;
+    if (!mag_read(path, text) || !magnet_parse(text, m, err)) {
+        logf_("magnet: %s is not a valid magnet link (%s), renamed to .bad", fileName.c_str(), err.c_str());
+        rename(path.c_str(), (path + ".bad").c_str());
+        return;
+    }
+    {   // уже в списке и не завершена: запрос выполнен
+        bool dup = false;
+        pthread_mutex_lock(&g_mu);
+        dup = g_dupTitles.count(m.hex) > 0;
+        pthread_mutex_unlock(&g_mu);
+        if (dup) { logf_("magnet: %s is already in the list, request removed", m.hex.c_str()); unlink(path.c_str()); return; }
+    }
+    pthread_mutex_lock(&g_magMu);
+    g_mag[path].fetching = true;
+    pthread_mutex_unlock(&g_magMu);
+
+    std::string info;
+    logf_("magnet: looking for peers of %s%s%s", m.hex.c_str(), m.name.empty() ? "" : " ", m.name.c_str());
+    bool ok = metadata_fetch(m.hash, m.trackers, 45, mag_quitting, info, err);
+    std::string name;
+    if (ok) ok = mag_store_torrent(root, m, info, name, err);
+    if (ok) {
+        logf_("magnet: %s -> %s (%u bytes of metadata)", m.hex.c_str(), name.c_str(), (unsigned)info.size());
+        unlink(path.c_str());
+        pthread_mutex_lock(&g_magMu);
+        g_mag.erase(path);
+        pthread_mutex_unlock(&g_magMu);
+        g_rescan = true;
+        return;
+    }
+    pthread_mutex_lock(&g_magMu);
+    MagState& s2 = g_mag[path];
+    s2.fetching = false;
+    s2.fails++;
+    s2.err = err;
+    int delay = 20 << (s2.fails < 6 ? s2.fails : 6);       // 40 с, 80 с, ... не реже раза в ~21 минуту
+    if (delay > 1200) delay = 1200;
+    s2.nextTry = time(NULL) + delay;
+    pthread_mutex_unlock(&g_magMu);
+    logf_("magnet: %s failed (%s), next try in %d s", m.hex.c_str(), err.c_str(), delay);
+}
+
+static void* magnet_thread(void*)
+{
+    time_t lastScan = 0;
+    while (!g_quit) {
+        time_t now = time(NULL);
+        if (g_magWake.exchange(false) || now - lastScan >= 5) {
+            lastScan = now;
+            std::vector<std::string> roots = storage_roots();
+            std::set<std::string> seen;
+            for (size_t ri = 0; ri < roots.size() && !g_quit; ri++) {
+                DIR* d = opendir(roots[ri].c_str());
+                if (!d) continue;
+                std::vector<std::string> names;
+                struct dirent* e;
+                while ((e = readdir(d)) != NULL) {
+                    std::string nm = e->d_name;
+                    if (!nm.empty() && nm[0] != '.' && ends_with_ci(nm, ".magnet")) names.push_back(nm);
+                }
+                closedir(d);
+                std::sort(names.begin(), names.end());
+                for (size_t k = 0; k < names.size() && !g_quit; k++) {
+                    if (!mag_is_hash_name(names[k])) { mag_import(roots[ri], names[k]); continue; }
+                    seen.insert(roots[ri] + "/" + names[k]);
+                    mag_process(roots[ri], names[k], time(NULL));
+                }
+            }
+            pthread_mutex_lock(&g_magMu);      // запросы, чьи файлы исчезли (удалены руками), забываем
+            for (std::map<std::string, MagState>::iterator it = g_mag.begin(); it != g_mag.end();) {
+                if (!seen.count(it->first)) g_mag.erase(it++); else ++it;
+            }
+            pthread_mutex_unlock(&g_magMu);
+        }
+        usleep(200000);
+    }
+    return NULL;
+}
+
+static void magnet_start()
+{
+    if (pthread_create(&g_magThread, NULL, magnet_thread, NULL) == 0) g_magStarted = true;
+    else logf_("magnet: cannot start the worker thread");
+}
+
+static void magnet_stop()
+{
+    if (g_magStarted) { pthread_join(g_magThread, NULL); g_magStarted = false; }
+}
+
+// /api/add_magnet?magnet=<ссылка>[&drive=internal|N]: ставит запрос в очередь (файл .magnet), ответ сразу.
+static void handle_add_magnet(int c, const std::string& query)
+{
+    std::string uri = trim(qget(query, "magnet")), err;
+    Magnet m;
+    if (uri.size() > 2000 || !magnet_parse(uri, m, err)) { respond_json_error(c, 400, "Bad Request", "bad magnet link: " + err); return; }
+    {
+        bool dup = false;
+        std::string title;
+        pthread_mutex_lock(&g_mu);
+        std::map<std::string, std::string>::const_iterator di = g_dupTitles.find(m.hex);
+        if (di != g_dupTitles.end()) { dup = true; title = di->second; }
+        pthread_mutex_unlock(&g_mu);
+        if (dup) { respond(c, "application/json", "{\"ok\":true,\"duplicate\":true,\"hash\":\"" + m.hex + "\",\"title\":\"" + json_escape(title) + "\"}"); return; }
+    }
+    std::string root;
+    if (!pick_root(c, qget(query, "drive"), root)) return;
+    std::string path = root + "/" + m.hex + ".magnet";
+    struct stat sb;
+    bool exists = stat(path.c_str(), &sb) == 0;
+    if (!exists) {
+        std::string tmp = path + ".tmp";
+        FILE* f = fopen(tmp.c_str(), "wb");
+        if (!f) { respond_json_error(c, 500, "Error", "cannot write to the drive"); return; }
+        bool w = fwrite(uri.data(), 1, uri.size(), f) == uri.size() && fputc('\n', f) != EOF;
+        w = (fclose(f) == 0) && w;
+        if (!w || rename(tmp.c_str(), path.c_str()) != 0) { unlink(tmp.c_str()); respond_json_error(c, 500, "Error", "write to the drive failed"); return; }
+        logf_("magnet: request queued %s%s%s on %s", m.hex.c_str(), m.name.empty() ? "" : " ", m.name.c_str(), root.c_str());
+    }
+    g_magWake = true;
+    respond(c, "application/json", "{\"ok\":true,\"hash\":\"" + m.hex + "\",\"pending\":true,\"already_queued\":" + (exists ? "true" : "false") + "}");
+}
+
+// /api/magnets: ожидающие запросы.
+static std::string magnets_json()
+{
+    std::string j = "{\"magnets\":[";
+    pthread_mutex_lock(&g_magMu);
+    bool first = true;
+    for (std::map<std::string, MagState>::const_iterator it = g_mag.begin(); it != g_mag.end(); ++it) {
+        size_t sl = it->first.rfind('/');
+        std::string fn = sl == std::string::npos ? it->first : it->first.substr(sl + 1);
+        if (!first) j += ",";
+        first = false;
+        j += "{\"hash\":\"" + json_escape(fn.substr(0, fn.size() - 7)) + "\",\"fails\":" + std::to_string(it->second.fails) +
+             ",\"fetching\":" + (it->second.fetching ? "true" : "false") + ",\"error\":\"" + json_escape(it->second.err) + "\"}";
+    }
+    pthread_mutex_unlock(&g_magMu);
+    return j + "]}";
+}
+
 // Ставит команду в очередь и ждёт (до 3 секунд), пока главный цикл её применит и обновит состояние:
 // тогда страница, запросив состояние сразу после ответа, увидит уже новое, а не старое.
 static void queue_cmd(const std::string& cmd, const std::string& arg)
@@ -3487,6 +3764,10 @@ static void handle_client(int c)
         if (body.size() < clen) { respond_json_error(c, 408, "Request Timeout", "incomplete upload"); return; }
         body.resize(clen);
         handle_add(c, query, body);
+    } else if (path == "/api/add_magnet") {
+        handle_add_magnet(c, query);
+    } else if (path == "/api/magnets") {
+        respond(c, "application/json", magnets_json());
     } else if (path == "/api/url_probe") {
         // Проверка ссылки: .torrent возвращаем страницей содержимым (base64), дальше обычное добавление; иначе имя и размер файла.
         std::string url = trim(qget(query, "url")), err;
@@ -4423,6 +4704,7 @@ int main()
         return 1;
     }
     net_init();
+    magnet_start();
     if (g_listenPort > 0) {
         int lerr = 0;
         if (incoming_start(g_listenPort, &lerr)) {
@@ -4600,6 +4882,7 @@ int main()
     for (int w = 0; w < 160 && !g_zombies.empty(); w++) { reap_zombies(time(NULL)); usleep(50000); }
     writer_stop(8000);
     reap_zombies(time(NULL));
+    magnet_stop();
     if (g_srvStarted) pthread_join(g_srvThread, NULL);
     for (int w = 0; w < 300 && g_clients.load() > 0; w++) usleep(10000);     // дать допоказать ответы (до 3 с)
     incoming_stop();

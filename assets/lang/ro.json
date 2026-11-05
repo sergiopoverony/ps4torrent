@@ -183,5 +183,10 @@
 "st_error": "eroare",
 "tc_st_error": "eroare",
 "tc_upload": "trimitere",
-"tc_seeding": "se partajează"
+"tc_seeding": "se partajează",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Link magnet:",
+"magnet_queued": "Cerere acceptată: torrentul va porni imediat ce este primită descrierea lui",
+"magnet_dup": "Acest torrent este deja în listă",
+"magnet_bad": "Acesta nu este un link magnet"
 }

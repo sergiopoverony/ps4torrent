@@ -183,5 +183,10 @@
 "st_error": "chyba",
 "tc_st_error": "chyba",
 "tc_upload": "odesílání",
-"tc_seeding": "sdílí se"
+"tc_seeding": "sdílí se",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Odkaz magnet:",
+"magnet_queued": "Požadavek přijat: stahování začne, jakmile se získá popis torrentu",
+"magnet_dup": "Tento torrent už je v seznamu",
+"magnet_bad": "To není odkaz magnet"
 }

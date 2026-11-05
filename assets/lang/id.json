@@ -183,5 +183,10 @@
 "st_error": "galat",
 "tc_st_error": "galat",
 "tc_upload": "kirim",
-"tc_seeding": "berbagi"
+"tc_seeding": "berbagi",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Tautan magnet:",
+"magnet_queued": "Permintaan diterima: torrent akan dimulai setelah deskripsinya diterima",
+"magnet_dup": "Torrent ini sudah ada di daftar",
+"magnet_bad": "Itu bukan tautan magnet"
 }

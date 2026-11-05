@@ -183,5 +183,10 @@
 "st_error": "virhe",
 "tc_st_error": "virhe",
 "tc_upload": "lähetys",
-"tc_seeding": "jaetaan"
+"tc_seeding": "jaetaan",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Magnet-linkki:",
+"magnet_queued": "Pyyntö hyväksytty: torrent alkaa heti, kun sen kuvaus on saatu",
+"magnet_dup": "Tämä torrent on jo luettelossa",
+"magnet_bad": "Tämä ei ole magnet-linkki"
 }

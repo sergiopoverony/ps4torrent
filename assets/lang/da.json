@@ -183,5 +183,10 @@
 "st_error": "fejl",
 "tc_st_error": "fejl",
 "tc_upload": "upload",
-"tc_seeding": "seeder"
+"tc_seeding": "seeder",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Magnet-link:",
+"magnet_queued": "Anmodning modtaget: torrenten starter, så snart beskrivelsen er hentet",
+"magnet_dup": "Denne torrent er allerede på listen",
+"magnet_bad": "Det er ikke et magnet-link"
 }

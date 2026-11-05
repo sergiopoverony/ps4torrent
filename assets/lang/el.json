@@ -183,5 +183,10 @@
 "st_error": "σφάλμα",
 "tc_st_error": "σφάλμα",
 "tc_upload": "αποστολή",
-"tc_seeding": "διαμοιράζεται"
+"tc_seeding": "διαμοιράζεται",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Σύνδεσμος magnet:",
+"magnet_queued": "Το αίτημα έγινε δεκτό: το torrent θα ξεκινήσει μόλις ληφθεί η περιγραφή του",
+"magnet_dup": "Αυτό το torrent υπάρχει ήδη στη λίστα",
+"magnet_bad": "Αυτό δεν είναι σύνδεσμος magnet"
 }

@@ -183,5 +183,10 @@
 "st_error": "error",
 "tc_st_error": "error",
 "tc_upload": "upload",
-"tc_seeding": "seeding"
+"tc_seeding": "seeding",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Magnet link:",
+"magnet_queued": "Request accepted: the torrent will start as soon as its description is received",
+"magnet_dup": "This torrent is already in the list",
+"magnet_bad": "That is not a magnet link"
 }
