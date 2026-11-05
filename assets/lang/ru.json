@@ -183,5 +183,10 @@
 "st_error": "ошибка",
 "tc_st_error": "ошибка",
 "tc_upload": "отдача",
-"tc_seeding": "раздаётся"
+"tc_seeding": "раздаётся",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Magnet-ссылка:",
+"magnet_queued": "Запрос принят: раздача начнётся, как только будет получено её описание",
+"magnet_dup": "Эта раздача уже в списке",
+"magnet_bad": "Это не magnet-ссылка"
 }

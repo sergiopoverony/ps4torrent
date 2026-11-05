@@ -2326,6 +2326,7 @@ button:disabled{opacity:.55;cursor:default}
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="urlb" data-i18n="btn_add_url">+ link</button>
+<button id="magb" data-i18n="btn_magnet">+ magnet</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
 <button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
 <div id="warn" class="warn"></div>
@@ -2922,6 +2923,16 @@ $('dgo').onclick = function(){
 // Добавление по ссылке http://: консоль сама открывает ссылку. .torrent идёт обычным путём (окно выбора места и файлов),
 // любой другой файл качается напрямую.
 function b64buf(s){ var bin = atob(s), u = new Uint8Array(bin.length); for (var k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k); return u.buffer; }
+$('magb').onclick = function(){
+  var m = prompt(T('magnet_prompt'), 'magnet:?');
+  if (!m) return;
+  m = m.trim();
+  if (!m || m === 'magnet:?') return;
+  api('/api/add_magnet?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }).then(function(d){
+    say(!d.ok ? (d.error || T('failed')) : (d.duplicate ? T('magnet_dup') : T('magnet_queued')), !d.ok || d.duplicate);
+    load(true);
+  }).catch(function(){ say(T('failed'), true); });
+};
 $('urlb').onclick = function(){
   var url = prompt(T('url_prompt'), 'http://');
   if (!url) return;
@@ -3310,16 +3321,62 @@ static bool g_magStarted = false;
 
 static bool mag_quitting() { return g_quit.load(); }
 
-static bool mag_read(const std::string& path, std::string& out)
+static bool mag_read(const std::string& path, std::string& out, size_t cap = 4096)
 {
     out.clear();
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char b[512];
     size_t n;
-    while (out.size() < 4096 && (n = fread(b, 1, sizeof(b), f)) > 0) out.append(b, n);
+    while (out.size() < cap && (n = fread(b, 1, sizeof(b), f)) > 0) out.append(b, n);
     fclose(f);
     return true;
+}
+
+static bool mag_is_hash_name(const std::string& fileName)
+{
+    if (fileName.size() != 47 || fileName.compare(40, 7, ".magnet") != 0) return false;
+    for (int i = 0; i < 40; i++) {
+        char c = fileName[(size_t)i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+// Файл .magnet с любым именем (например, games.magnet): в каждой строке ссылка magnet:?... или просто хэш (40 hex).
+// Из каждой строки делается свой запрос <хэш>.magnet, сам файл после этого удаляется (если ни одной годной строки нет - .bad).
+static void mag_import(const std::string& root, const std::string& fileName)
+{
+    std::string path = root + "/" + fileName, text;
+    if (!mag_read(path, text, 256 * 1024)) return;
+    int good = 0, bad = 0;
+    size_t i = 0;
+    while (i <= text.size()) {
+        size_t e = text.find('\n', i);
+        if (e == std::string::npos) e = text.size();
+        std::string line = trim(text.substr(i, e - i));
+        i = e + 1;
+        if (line.empty() || line[0] == '#') continue;
+        if (line.size() == 40 && line.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) line = "magnet:?xt=urn:btih:" + line;
+        Magnet m;
+        std::string err;
+        if (line.size() > 2000 || !magnet_parse(line, m, err)) { bad++; continue; }
+        good++;
+        std::string dst = root + "/" + m.hex + ".magnet";
+        struct stat sb;
+        if (stat(dst.c_str(), &sb) == 0) continue;
+        std::string tmp = dst + ".tmp";
+        FILE* f = fopen(tmp.c_str(), "wb");
+        if (!f) continue;
+        bool w = fwrite(line.data(), 1, line.size(), f) == line.size() && fputc('\n', f) != EOF;
+        w = (fclose(f) == 0) && w;
+        if (!w || rename(tmp.c_str(), dst.c_str()) != 0) { unlink(tmp.c_str()); good--; }
+    }
+    logf_("magnet: %s: %d request(s) taken, %d bad line(s)", fileName.c_str(), good, bad);
+    if (good > 0 && bad == 0) unlink(path.c_str());
+    else if (good > 0) { unlink(path.c_str()); }
+    else rename(path.c_str(), (path + ".bad").c_str());
+    g_magWake = true;
 }
 
 // Собирает .torrent из полученного описания и кладёт в root. true: файл сохранён (name - его имя).
@@ -3429,6 +3486,7 @@ static void* magnet_thread(void*)
                 closedir(d);
                 std::sort(names.begin(), names.end());
                 for (size_t k = 0; k < names.size() && !g_quit; k++) {
+                    if (!mag_is_hash_name(names[k])) { mag_import(roots[ri], names[k]); continue; }
                     seen.insert(roots[ri] + "/" + names[k]);
                     mag_process(roots[ri], names[k], time(NULL));
                 }

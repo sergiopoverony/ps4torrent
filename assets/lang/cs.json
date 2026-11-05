@@ -183,5 +183,10 @@
 "st_error": "chyba",
 "tc_st_error": "chyba",
 "tc_upload": "odesílání",
-"tc_seeding": "sdílí se"
+"tc_seeding": "sdílí se",
+"btn_magnet": "+ magnet",
+"magnet_prompt": "Magnet link:",
+"magnet_queued": "Request accepted: the torrent will start as soon as its description is received",
+"magnet_dup": "This torrent is already in the list",
+"magnet_bad": "That is not a magnet link"
 }
