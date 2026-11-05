@@ -185,8 +185,8 @@
 "tc_upload": "feltöltés",
 "tc_seeding": "megosztás",
 "btn_magnet": "+ magnet",
-"magnet_prompt": "Magnet link:",
-"magnet_queued": "Request accepted: the torrent will start as soon as its description is received",
-"magnet_dup": "This torrent is already in the list",
-"magnet_bad": "That is not a magnet link"
+"magnet_prompt": "Magnet-link:",
+"magnet_queued": "A kérés elfogadva: a torrent elindul, amint megérkezik a leírása",
+"magnet_dup": "Ez a torrent már szerepel a listában",
+"magnet_bad": "Ez nem magnet-link"
 }

@@ -185,8 +185,8 @@
 "tc_upload": "invio",
 "tc_seeding": "in condivisione",
 "btn_magnet": "+ magnet",
-"magnet_prompt": "Magnet link:",
-"magnet_queued": "Request accepted: the torrent will start as soon as its description is received",
-"magnet_dup": "This torrent is already in the list",
-"magnet_bad": "That is not a magnet link"
+"magnet_prompt": "Link magnet:",
+"magnet_queued": "Richiesta accettata: il torrent partirà appena sarà ricevuta la sua descrizione",
+"magnet_dup": "Questo torrent è già nell'elenco",
+"magnet_bad": "Questo non è un link magnet"
 }

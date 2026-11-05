@@ -185,8 +185,8 @@
 "tc_upload": "uppladdning",
 "tc_seeding": "seedar",
 "btn_magnet": "+ magnet",
-"magnet_prompt": "Magnet link:",
-"magnet_queued": "Request accepted: the torrent will start as soon as its description is received",
-"magnet_dup": "This torrent is already in the list",
-"magnet_bad": "That is not a magnet link"
+"magnet_prompt": "Magnet-länk:",
+"magnet_queued": "Begäran mottagen: torrenten startar så snart beskrivningen har tagits emot",
+"magnet_dup": "Den här torrenten finns redan i listan",
+"magnet_bad": "Det här är inte en magnet-länk"
 }
