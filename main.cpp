@@ -2282,8 +2282,10 @@ static const char* PAGE = R"HTMLPAGE(<!doctype html><html lang="en" translate="n
 <title>ps4torrent</title><link rel="icon" href="/favicon.ico"><style>
 :root{color-scheme:dark;--bg:#10151c;--fg:#e6edf3;--mut:#8b98a8;--card:#18202a;--ac:#4aa3ff;--ok:#3fb950;--wr:#d29922;--er:#f85149}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
-header{padding:14px 18px 8px;display:flex;gap:10px 12px;flex-wrap:wrap;align-items:center}
-#sum{flex-basis:100%;font-size:13px}
+header{padding:14px 18px;display:flex;gap:12px 16px;align-items:center}
+.hr{display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
+.hb{display:flex;gap:10px 12px;flex-wrap:wrap;align-items:center}
+#sum{font-size:13px}
 h1{font-size:18px;margin:0}.mut{color:var(--mut)}
 main{padding:0 14px 24px;display:grid;gap:10px}
 .c{background:var(--card);border-radius:10px;padding:12px 14px}
@@ -2306,7 +2308,13 @@ select{max-width:100%;border:1px solid var(--mut);border-radius:6px;padding:4px 
 option:checked,option:hover{background:#25344a;color:var(--fg)}
 .dl .f{padding:3px 0;word-break:break-word}.dl .row{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap}
 .logo{display:inline-flex;align-items:center;background:#10151c;border-radius:10px;padding:6px 14px;text-decoration:none}
-.logo img{height:36px;width:auto;display:block}
+.logo img{height:50px;width:auto;display:block}
+@media (max-width:760px){
+header{flex-wrap:wrap;gap:12px}
+.hr,.hb{display:contents}
+.logo{order:-2}.logo img{height:36px}
+#sum{order:-1;font-size:inherit}
+}
 .fl{max-height:56vh;overflow:auto;margin:10px 0;border:1px solid #25344a;border-radius:8px;padding:4px 8px}
 .fl .h{padding:8px 0 2px;border-top:1px solid #25344a}.fl .h:first-child{border-top:0}
 .fl label{display:flex;gap:8px;align-items:flex-start;padding:3px 0;word-break:break-word}
@@ -2326,12 +2334,13 @@ button:disabled{opacity:.55;cursor:default}
 #cfg input{width:70px;background:transparent;color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
 </style></head><body>
 <header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a>
+<div class="hr"><div class="hb">
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="urlb" data-i18n="btn_add_url">+ link</button>
 <button id="magb" data-i18n="btn_magnet">+ magnet</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
-<button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button>
-<span class="mut" id="sum"></span></header>
+<button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></div>
+<span class="mut" id="sum"></span></div></header>
 <div id="warn" class="warn"></div>
 <div id="msg"></div>
 <div id="cfg" class="c">
