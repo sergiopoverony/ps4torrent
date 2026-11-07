@@ -2275,13 +2275,15 @@ static void build_snapshot()
     }
 }
 
-static const char* PAGE = R"HTMLPAGE(<!doctype html><html><head><meta charset="utf-8">
+static const char* PAGE = R"HTMLPAGE(<!doctype html><html lang="en" translate="no" class="notranslate"><head><meta charset="utf-8">
+<meta name="google" content="notranslate">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark"><meta name="theme-color" content="#10151c">
 <title>ps4torrent</title><link rel="icon" href="/favicon.ico"><style>
 :root{color-scheme:dark;--bg:#10151c;--fg:#e6edf3;--mut:#8b98a8;--card:#18202a;--ac:#4aa3ff;--ok:#3fb950;--wr:#d29922;--er:#f85149}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
-header{padding:14px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+header{padding:14px 18px 8px;display:flex;gap:10px 12px;flex-wrap:wrap;align-items:center}
+#sum{flex-basis:100%;font-size:13px}
 h1{font-size:18px;margin:0}.mut{color:var(--mut)}
 main{padding:0 14px 24px;display:grid;gap:10px}
 .c{background:var(--card);border-radius:10px;padding:12px 14px}
@@ -2323,12 +2325,13 @@ button:disabled{opacity:.55;cursor:default}
 #cfg select{background:var(--card);color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
 #cfg input{width:70px;background:transparent;color:var(--fg);border:1px solid var(--mut);border-radius:6px;padding:3px 6px}
 </style></head><body>
-<header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a><span class="mut" id="sum"></span>
+<header><a class="logo" href="/"><img src="/logo.png" alt="ps4torrent"></a>
 <label class="btn"><span data-i18n="btn_add">+ .torrent</span><input id="up" type="file" accept=".torrent" multiple hidden></label>
 <button id="urlb" data-i18n="btn_add_url">+ link</button>
 <button id="magb" data-i18n="btn_magnet">+ magnet</button>
 <button id="allgo" data-i18n="btn_startall">start all</button><button id="allstop" data-i18n="btn_pauseall">pause all</button>
-<button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button></header>
+<button id="cfgb" data-i18n="btn_settings">settings</button><button id="donb" class="go" data-i18n="btn_donate">donate</button><button id="quitb" class="dng" data-i18n="btn_quit" data-ititle="quit_title">shut down</button>
+<span class="mut" id="sum"></span></header>
 <div id="warn" class="warn"></div>
 <div id="msg"></div>
 <div id="cfg" class="c">
@@ -2346,7 +2349,7 @@ button:disabled{opacity:.55;cursor:default}
 <div style="margin-top:12px"><label><span data-i18n="dlg_save_to">Save to</span> <select id="dsel"></select></label></div>
 <div id="dinfo" class="mut" style="margin-top:6px"></div>
 <div id="dwarn" class="warn" style="margin:8px 0 0"></div>
-<div style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> <span data-i18n="dlg_start_now">Start downloading right away</span></label></div>
+<div id="dstartrow" style="margin-top:10px"><label><input id="dstart" type="checkbox" checked> <span data-i18n="dlg_start_now">Start downloading right away</span></label></div>
 <div class="row"><button id="dcancel" class="dng" data-i18n="dlg_cancel">Cancel</button><button id="dgo" class="go">Download</button></div>
 </div></div>
 <div id="dlg2" class="ov"><div class="dl dl2 c">
@@ -2397,6 +2400,7 @@ function pickLang(){
 }
 function setLang(then){
   LCODE = pickLang();
+  document.documentElement.lang = LCODE;            // язык страницы известен: браузер не включает автоперевод («HDD» -> «Жесткий диск»)
   var jobs = [getJson('/lang/en.json').then(function(d){ LE = d; })];
   if (LCODE !== 'en') jobs.push(getJson('/lang/' + LCODE + '.json').then(function(d){ LD = d; }));
   else LD = {};
@@ -2480,7 +2484,7 @@ function livePct(i){ var p = Math.floor(liveFrac(i)); return (i.status === 'comp
 function liveBar(i){ return Math.round(liveFrac(i) * 10) / 10; }
 function liveEta(i){ var L = live[i.hash]; if (!L || i.eta_s < 0) return i.eta_s; return Math.max(1, Math.round(L.eta - (Date.now() - L.polled) / 1000)); }
 function pctText(i){ return (i.kind === 'http' && !i.size_known) ? sz(i.done) : T('row_pct', livePct(i), sz(i.size)); }
-function liveSpeedText(i){ return (i.kind === 'http' ? T('row_speed_http', liveSpeed(i)) : T('row_speed', liveSpeed(i), i.peers)) + (i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : ''); }
+function liveSpeedText(i){ if (i.status === 'complete') return ''; return (i.kind === 'http' ? T('row_speed_http', liveSpeed(i)) : T('row_speed', liveSpeed(i), i.peers)) + (i.status === 'downloading' ? T('row_eta', tm(liveEta(i))) : ''); }
 
 function row(i){
   var b = '';
@@ -2714,6 +2718,7 @@ function openDialog(files){
   $('dsel').innerHTML = destOptions().map(function(o){ return '<option value="' + o.v + '">' + E(o.label) + '</option>'; }).join('');
   $('dsel').value = 'internal';                                    // по умолчанию: система консоли
   $('dstart').checked = true;
+  $('dstartrow').style.display = (files.length === 1 && files[0].url) ? 'none' : '';   // по ссылке: всегда сразу качать
   updateDlg();
   $('dlg').style.display = 'flex';
 }
@@ -2898,7 +2903,7 @@ function doUpload(files, drive, start, label){
 
 $('dgo').onclick = function(){
   if (dlgFiles.length === 1 && dlgFiles[0].url) {                  // прямая загрузка по ссылке
-    var u = dlgFiles[0], us = $('dsel'), ud = us.value, ust = $('dstart').checked ? 1 : 0;
+    var u = dlgFiles[0], us = $('dsel'), ud = us.value, ust = 1;
     var ul = us.options[us.selectedIndex] ? us.options[us.selectedIndex].text.split(' - ')[0] : ud;
     closeDialog();
     api('/api/add_url?url=' + encodeURIComponent(u.url) + '&name=' + encodeURIComponent(u.info.name) + '&size=' + u.info.size + '&size_known=' + (u.sizeKnown ? 1 : 0)
@@ -2928,10 +2933,28 @@ $('magb').onclick = function(){
   if (!m) return;
   m = m.trim();
   if (!m) return;
-  api('/api/add_magnet?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }).then(function(d){
-    say(!d.ok ? (d.error || T('failed')) : (d.duplicate ? T('magnet_dup') : T('magnet_queued')), !d.ok || d.duplicate);
-    load(true);
-  }).catch(function(){ say(T('failed'), true); });
+  // Консоль сразу получает описание раздачи у пиров (до минуты); дальше то же окно, что для .torrent: место и файлы.
+  say(T('magnet_fetching'), false);
+  withTimeout(api('/api/magnet_probe?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }), 75000).then(function(d){
+    if (d.bad) { say(T('magnet_bad'), true); return; }
+    if (d.duplicate) { say(T('magnet_dup'), true); return; }
+    if (!d.ok) {
+      // Не получилось сейчас (нет пиров, нет сети): можно поставить в очередь, раздача добавится сама со всеми файлами.
+      $('msg').style.display = 'none';
+      if (!confirm(T('magnet_noinfo', d.error || ''))) return;
+      api('/api/add_magnet?magnet=' + encodeURIComponent(m)).then(function(r){ return r.json(); }).then(function(q){
+        say(!q.ok ? (q.error || T('failed')) : (q.duplicate ? T('magnet_dup') : T('magnet_queued')), !q.ok || q.duplicate);
+        load(true);
+      }).catch(function(){ say(T('failed'), true); });
+      return;
+    }
+    $('msg').style.display = 'none';
+    api('/status').then(function(r){ return r.json(); }).then(function(st){ lastData = st; }).catch(function(){}).then(function(){
+      var buf = b64buf(d.data), info = torrentInfo(buf);
+      if (!info) { say(T('url_badtorrent'), true); return; }
+      openDialog([{ name: (info.name || d.hash) + '.torrent', data: buf, info: info }]);
+    });
+  }).catch(function(){ say(T('noanswer'), true); });
 };
 $('urlb').onclick = function(){
   var url = prompt(T('url_prompt'), 'http://');
@@ -3546,6 +3569,42 @@ static void handle_add_magnet(int c, const std::string& query)
     respond(c, "application/json", "{\"ok\":true,\"hash\":\"" + m.hex + "\",\"pending\":true,\"already_queued\":" + (exists ? "true" : "false") + "}");
 }
 
+// /api/magnet_probe?magnet=<ссылка>: получает описание раздачи сразу (до ~40 с) и отдаёт странице готовый .torrent (base64),
+// чтобы она показала обычное окно выбора места и файлов. Не получилось: {"ok":false,"error":...} (страница предлагает очередь).
+static void handle_magnet_probe(int c, const std::string& query)
+{
+    std::string uri = trim(qget(query, "magnet")), err;
+    Magnet m;
+    if (uri.size() > 2000 || !magnet_parse(uri, m, err)) {
+        respond(c, "application/json", "{\"ok\":false,\"bad\":true,\"error\":\"" + json_escape("bad magnet link: " + err) + "\"}");
+        return;
+    }
+    {
+        bool dup = false;
+        std::string title;
+        pthread_mutex_lock(&g_mu);
+        std::map<std::string, std::string>::const_iterator di = g_dupTitles.find(m.hex);
+        if (di != g_dupTitles.end()) { dup = true; title = di->second; }
+        pthread_mutex_unlock(&g_mu);
+        if (dup) { respond(c, "application/json", "{\"ok\":true,\"duplicate\":true,\"hash\":\"" + m.hex + "\",\"title\":\"" + json_escape(title) + "\"}"); return; }
+    }
+    logf_("magnet: getting the file list for %s%s%s (page request)", m.hex.c_str(), m.name.empty() ? "" : " ", m.name.c_str());
+    std::string info;
+    if (!metadata_fetch(m.hash, m.trackers, 40, mag_quitting, info, err)) {
+        logf_("magnet: %s: %s", m.hex.c_str(), err.c_str());
+        respond(c, "application/json", "{\"ok\":false,\"hash\":\"" + m.hex + "\",\"error\":\"" + json_escape(err) + "\"}");
+        return;
+    }
+    std::string data = magnet_build_torrent(info, m.trackers);
+    std::string().swap(info);
+    if (data.size() > MAX_UPLOAD) {
+        respond(c, "application/json", "{\"ok\":false,\"hash\":\"" + m.hex + "\",\"error\":\"the torrent description is larger than 1 MB\"}");
+        return;
+    }
+    respond(c, "application/json", "{\"ok\":true,\"torrent\":true,\"hash\":\"" + m.hex + "\",\"name\":\"" + json_escape(m.name) +
+            "\",\"data\":\"" + base64(data) + "\"}");
+}
+
 // /api/magnets: ожидающие запросы.
 static std::string magnets_json()
 {
@@ -3766,6 +3825,8 @@ static void handle_client(int c)
         handle_add(c, query, body);
     } else if (path == "/api/add_magnet") {
         handle_add_magnet(c, query);
+    } else if (path == "/api/magnet_probe") {
+        handle_magnet_probe(c, query);
     } else if (path == "/api/magnets") {
         respond(c, "application/json", magnets_json());
     } else if (path == "/api/url_probe") {

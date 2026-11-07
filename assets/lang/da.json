@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-link:",
 "magnet_queued": "Anmodning modtaget: torrenten starter, så snart beskrivelsen er hentet",
 "magnet_dup": "Denne torrent er allerede på listen",
-"magnet_bad": "Det er ikke et magnet-link"
+"magnet_bad": "Det er ikke et magnet-link",
+"magnet_fetching": "Henter fillisten fra peers (op til et minut)...",
+"magnet_noinfo": "Fillisten kunne ikke hentes lige nu: {0}\n\nSæt anmodningen i kø? Torrenten tilføjes af sig selv, så snart der findes peers (alle filer downloades)."
 }

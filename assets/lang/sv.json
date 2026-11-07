@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-länk:",
 "magnet_queued": "Begäran mottagen: torrenten startar så snart beskrivningen har tagits emot",
 "magnet_dup": "Den här torrenten finns redan i listan",
-"magnet_bad": "Det här är inte en magnet-länk"
+"magnet_bad": "Det här är inte en magnet-länk",
+"magnet_fetching": "Hämtar fillistan från peers (upp till en minut)...",
+"magnet_noinfo": "Fillistan kunde inte hämtas just nu: {0}\n\nLägga begäran i kö? Torrenten läggs till av sig själv så snart peers hittas (alla filer laddas ned)."
 }

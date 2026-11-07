@@ -188,5 +188,7 @@
 "magnet_prompt": "Enlace magnet:",
 "magnet_queued": "Solicitud aceptada: el torrent empezará en cuanto se reciba su descripción",
 "magnet_dup": "Este torrent ya está en la lista",
-"magnet_bad": "Eso no es un enlace magnet"
+"magnet_bad": "Eso no es un enlace magnet",
+"magnet_fetching": "Obteniendo la lista de archivos de los pares (hasta un minuto)...",
+"magnet_noinfo": "Ahora no se pudo obtener la lista de archivos: {0}\n\n¿Poner la solicitud en cola? El torrent se añadirá solo en cuanto aparezcan pares (se descargarán todos los archivos)."
 }

@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-Link:",
 "magnet_queued": "Anfrage angenommen: Der Torrent startet, sobald seine Beschreibung empfangen wurde",
 "magnet_dup": "Dieser Torrent ist bereits in der Liste",
-"magnet_bad": "Das ist kein Magnet-Link"
+"magnet_bad": "Das ist kein Magnet-Link",
+"magnet_fetching": "Dateiliste wird von Peers geholt (bis zu einer Minute)...",
+"magnet_noinfo": "Die Dateiliste konnte gerade nicht geholt werden: {0}\n\nAnfrage in die Warteschlange stellen? Der Torrent wird von selbst hinzugefügt, sobald Peers gefunden werden (alle Dateien werden heruntergeladen)."
 }

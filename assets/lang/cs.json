@@ -188,5 +188,7 @@
 "magnet_prompt": "Odkaz magnet:",
 "magnet_queued": "Požadavek přijat: stahování začne, jakmile se získá popis torrentu",
 "magnet_dup": "Tento torrent už je v seznamu",
-"magnet_bad": "To není odkaz magnet"
+"magnet_bad": "To není odkaz magnet",
+"magnet_fetching": "Získávám seznam souborů od peerů (až minutu)...",
+"magnet_noinfo": "Seznam souborů teď nelze získat: {0}\n\nZařadit požadavek do fronty? Torrent se přidá sám, jakmile se najdou peery (stáhnou se všechny soubory)."
 }

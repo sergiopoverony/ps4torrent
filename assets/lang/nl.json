@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-link:",
 "magnet_queued": "Aanvraag geaccepteerd: de torrent start zodra de beschrijving is ontvangen",
 "magnet_dup": "Deze torrent staat al in de lijst",
-"magnet_bad": "Dit is geen magnet-link"
+"magnet_bad": "Dit is geen magnet-link",
+"magnet_fetching": "Bestandslijst ophalen bij peers (tot een minuut)...",
+"magnet_noinfo": "De bestandslijst kon nu niet worden opgehaald: {0}\n\nVerzoek in de wachtrij zetten? De torrent wordt vanzelf toegevoegd zodra er peers zijn (alle bestanden worden gedownload)."
 }
