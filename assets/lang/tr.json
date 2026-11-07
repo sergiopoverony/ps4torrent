@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet bağlantısı:",
 "magnet_queued": "İstek kabul edildi: torrent, açıklaması alınır alınmaz başlayacak",
 "magnet_dup": "Bu torrent zaten listede",
-"magnet_bad": "Bu bir magnet bağlantısı değil"
+"magnet_bad": "Bu bir magnet bağlantısı değil",
+"magnet_fetching": "Dosya listesi eşlerden alınıyor (bir dakikaya kadar)...",
+"magnet_noinfo": "Dosya listesi şu anda alınamadı: {0}\n\nİstek sıraya alınsın mı? Eşler bulunur bulunmaz torrent kendiliğinden eklenir (tüm dosyalar indirilir)."
 }

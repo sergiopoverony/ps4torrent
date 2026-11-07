@@ -188,5 +188,7 @@
 "magnet_prompt": "Tautan magnet:",
 "magnet_queued": "Permintaan diterima: torrent akan dimulai setelah deskripsinya diterima",
 "magnet_dup": "Torrent ini sudah ada di daftar",
-"magnet_bad": "Itu bukan tautan magnet"
+"magnet_bad": "Itu bukan tautan magnet",
+"magnet_fetching": "Mengambil daftar file dari peer (sampai satu menit)...",
+"magnet_noinfo": "Daftar file tidak bisa diambil sekarang: {0}\n\nMasukkan permintaan ke antrean? Torrent akan ditambahkan sendiri begitu peer ditemukan (semua file akan diunduh)."
 }

@@ -188,5 +188,7 @@
 "magnet_prompt": "Link magnet:",
 "magnet_queued": "Prośba przyjęta: torrent ruszy, gdy tylko zostanie odebrany jego opis",
 "magnet_dup": "Ten torrent jest już na liście",
-"magnet_bad": "To nie jest link magnet"
+"magnet_bad": "To nie jest link magnet",
+"magnet_fetching": "Pobieranie listy plików od peerów (do minuty)...",
+"magnet_noinfo": "Nie udało się teraz pobrać listy plików: {0}\n\nDodać żądanie do kolejki? Torrent doda się sam, gdy tylko znajdą się peery (pobrane zostaną wszystkie pliki)."
 }

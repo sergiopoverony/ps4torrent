@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-link:",
 "magnet_queued": "A kérés elfogadva: a torrent elindul, amint megérkezik a leírása",
 "magnet_dup": "Ez a torrent már szerepel a listában",
-"magnet_bad": "Ez nem magnet-link"
+"magnet_bad": "Ez nem magnet-link",
+"magnet_fetching": "A fájllista lekérése a társaktól (legfeljebb egy perc)...",
+"magnet_noinfo": "A fájllistát most nem sikerült lekérni: {0}\n\nSorba állítja a kérést? A torrent magától bekerül, amint lesznek társak (minden fájl letöltődik)."
 }

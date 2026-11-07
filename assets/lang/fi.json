@@ -188,5 +188,7 @@
 "magnet_prompt": "Magnet-linkki:",
 "magnet_queued": "Pyyntö hyväksytty: torrent alkaa heti, kun sen kuvaus on saatu",
 "magnet_dup": "Tämä torrent on jo luettelossa",
-"magnet_bad": "Tämä ei ole magnet-linkki"
+"magnet_bad": "Tämä ei ole magnet-linkki",
+"magnet_fetching": "Haetaan tiedostoluetteloa vertaisilta (enintään minuutti)...",
+"magnet_noinfo": "Tiedostoluetteloa ei saatu juuri nyt: {0}\n\nLaitetaanko pyyntö jonoon? Torrent lisätään itsestään heti, kun vertaisia löytyy (kaikki tiedostot ladataan)."
 }
