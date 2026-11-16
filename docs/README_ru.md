@@ -16,17 +16,21 @@
 
 ## Сборка (Linux / WSL)
 
-Служба (нужен ps4-payload-sdk):
+Обновить код:
 
-    export PS4_PAYLOAD_SDK=/opt/ps4-payload-sdk
-    make
+    cd ~/ps4torrent && git pull origin main
+
+Если `git pull` ругается на изменённый `release/ps4torrentd.elf`, перед ним: `git checkout -- release/ps4torrentd.elf`.
+
+Только служба (payload):
+
+    PS4_PAYLOAD_SDK=$HOME/sdk1402 make clean all
 
 PKG-приложение вместе со службой (нужен ещё OpenOrbis PS4 Toolchain):
 
-    export OO_PS4_TOOLCHAIN=/путь/к/OpenOrbis-PS4-Toolchain
-    cd pkg && make full
+    cd pkg && export OO_PS4_TOOLCHAIN=/home/sony/OpenOrbis-PS4-Toolchain PS4_PAYLOAD_SDK=$HOME/sdk1402 && make clean && make full
 
-Готовые PKG выкладываются на странице Releases.
+Пути к SDK и OpenOrbis подставьте свои. Готовые PKG выкладываются на странице Releases.
 
 ## Отдача (сидирование), версия 1.8.1.0
 
